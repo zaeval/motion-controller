@@ -1,0 +1,54 @@
+name: MotionController
+
+options:
+  bundleIdPrefix: com.bori
+  deploymentTarget:
+    macOS: "15.0"
+  createIntermediateGroups: true
+
+settings:
+  base:
+    SWIFT_VERSION: "6.0"
+    # Local development signing only: no provisioning profile, nothing registered on the developer portal.
+    # A stable identity keeps the Accessibility grant across rebuilds (ad-hoc signing resets it every build).
+    CODE_SIGN_STYLE: Manual
+    CODE_SIGN_IDENTITY: "Apple Development"
+    DEVELOPMENT_TEAM: RWGR7K8RB6
+    ENABLE_HARDENED_RUNTIME: YES
+
+packages:
+  GestureCore:
+    path: Packages/GestureCore
+  KeyboardShortcuts:
+    url: https://github.com/sindresorhus/KeyboardShortcuts
+    from: 3.0.1
+
+targets:
+  MotionController:
+    type: application
+    platform: macOS
+    sources:
+      - path: App
+    info:
+      path: App/Info.plist
+      properties:
+        CFBundleName: MotionController
+        CFBundleDisplayName: Motion Controller
+        CFBundleShortVersionString: "0.1.0"
+        # App/AppIcon.icns is copied in as a resource because `sources: App` takes the whole folder.
+        CFBundleIconFile: AppIcon
+        CFBundleVersion: "1"
+        LSUIElement: true
+        NSCameraUsageDescription: "손 제스처를 인식하려고 카메라를 사용합니다. 영상은 저장하거나 전송하지 않습니다."
+    entitlements:
+      path: App/MotionController.entitlements
+      properties:
+        com.apple.security.app-sandbox: false
+        com.apple.security.device.camera: true
+    dependencies:
+      - package: GestureCore
+      - package: KeyboardShortcuts
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: com.bori.MotionController
+        PRODUCT_NAME: MotionController
