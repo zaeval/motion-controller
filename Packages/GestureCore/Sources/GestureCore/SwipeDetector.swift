@@ -78,6 +78,11 @@ public struct SwipeDetector: Sendable {
         /// as a stroke in the other direction. Swiping twice means physically returning, and every recorded repeat
         /// has that return in it, while a single swipe whose hand drifts back slowly does not: it was firing twice.
         public var repeatNeedsReturn = true
+        /// How long that requirement lasts. Past it a repeat needs no return: the hand may have left the frame and
+        /// come back, returning off camera, and with no bound that second swipe stayed blocked for good — until a
+        /// deliberate swipe the other way unblocked it by switching the wrong desktop. Recorded repeats come
+        /// 0.73–1.06 s apart and the single swipe that double-fired did so at 1.27 s, so both stay decided.
+        public var returnWindow: TimeInterval = 2.0
         /// No swipe in the opposite direction this soon: the return stroke, which ends 0.22–0.70 s after the stroke
         /// it undoes and travels just as far.
         public var oppositeSuppression: TimeInterval = 0.9
@@ -285,7 +290,7 @@ public struct SwipeDetector: Sendable {
                 let elapsed = time - lastFire.time
                 let sameWay = waiting.direction == lastFire.direction
                 if elapsed < (sameWay ? settings.refractory : settings.oppositeSuppression) { continue }
-                if sameWay, settings.repeatNeedsReturn, !handCameBack { continue }
+                if sameWay, settings.repeatNeedsReturn, elapsed < settings.returnWindow, !handCameBack { continue }
             }
             lastFire = (waiting.direction, time)
             handCameBack = false

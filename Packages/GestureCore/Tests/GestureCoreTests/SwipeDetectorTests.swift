@@ -94,10 +94,23 @@ struct SwipeDetectorTests {
     @Test func aSecondStrokeWithoutAReturnIsNotASecondSwipe() {
         var detector = SwipeDetector()
         var fired = sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.60, 0.6), seconds: 0.3, startingAt: 0, tail: 0)
-        // Drifting back too slowly to be a stroke, then the same way again: one recorded single swipe fired twice.
-        fired += sweep(&detector, from: Vec2(0.60, 0.6), to: Vec2(0.30, 0.6), seconds: 2.5, startingAt: 0.35, tail: 0)
-        fired += sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.60, 0.6), seconds: 0.3, startingAt: 2.9)
+        // One recorded single swipe fired twice: the hand drifted back too slowly to count as a return stroke, then
+        // went the same way again 1.27 s later. The timing here is that clip's.
+        fired += sweep(&detector, from: Vec2(0.60, 0.6), to: Vec2(0.50, 0.6), seconds: 0.9, startingAt: 0.35, tail: 0)
+        fired += sweep(&detector, from: Vec2(0.50, 0.6), to: Vec2(0.80, 0.6), seconds: 0.3, startingAt: 1.3)
         #expect(fired == [.left])
+    }
+
+    @Test func swipingTheSameWayAgainLaterNeedsNoReturn() {
+        var detector = SwipeDetector()
+        var fired = sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.60, 0.6), seconds: 0.3, startingAt: 0, tail: 0)
+        // The hand leaves the frame and comes back, so its return never happened on camera. Requiring one with no
+        // time limit blocked this swipe for good.
+        for index in 0...75 {
+            if let direction = detector.update(nil, at: 0.35 + Double(index) * Self.frame) { fired.append(direction) }
+        }
+        fired += sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.60, 0.6), seconds: 0.3, startingAt: 3.0)
+        #expect(fired == [.left, .left])
     }
 
     @Test func slowDriftAndVerticalMotionDoNotFire() {
