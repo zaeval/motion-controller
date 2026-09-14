@@ -64,7 +64,8 @@ struct TutorialCourseTests {
     @Test func eachMissionSaysWhichModeItNeeds() {
         // Sweeping is only heard in the mode a held palm opens.
         #expect(TutorialStep.switchDesktop.requiredMode == .desktop)
-        #expect(TutorialStep.playPause.requiredMode == .normal)
+        // The pump is heard in gesture and desktop mode both, so its mission doesn't demand one.
+        #expect(TutorialStep.playPause.requiredMode == nil)
         #expect(TutorialStep.drag.requiredMode == .pointer)
         #expect(TutorialStep.enterCursor.requiredMode == nil)
         #expect(TutorialStep.enterDesktop.requiredMode == nil)

@@ -25,7 +25,11 @@ public enum SwipeDirection: String, Codable, Sendable {
 ///   the end of a stroke doesn't make the way back a swipe.
 public struct SwipeDetector: Sendable {
     public struct Settings: Codable, Equatable, Sendable {
-        public var armSeconds: TimeInterval = 0.3
+        /// How long the palm stands still before a sweep is measured from where it stood. Short on purpose: the
+        /// user's complaint (2026-09-14) was that switching felt slow, and what they were waiting for was this. It
+        /// can't go to zero — the standstill is what gives the stroke an origin, which is how a wind-up and a return
+        /// are told from the stroke itself.
+        public var armSeconds: TimeInterval = 0.15
         /// How far the palm may wander while it holds still, in image heights.
         public var stillRadius = 0.035
         /// Sideways travel from where the hand stood that makes a swipe, in frame widths. Recorded wind-ups the other
@@ -41,8 +45,10 @@ public struct SwipeDetector: Sendable {
         public var maxRise = 0.2
         /// Tracking gaps up to this long don't break a hold or a stroke. A fast stroke blurs out for a few frames.
         public var dropoutTolerance: TimeInterval = 0.3
-        /// No swipe the other way this soon after one.
-        public var oppositeSuppression: TimeInterval = 1.0
+        /// No swipe the other way this soon after one. Longer than the arming hold by a lot, because that hold is
+        /// now short enough for a hand pausing at the end of a stroke to re-arm before it comes back: logged return
+        /// strokes arrived 1.4–1.6 s after the stroke they were returning from.
+        public var oppositeSuppression: TimeInterval = 1.6
         public var invert = false
 
         public init() {}

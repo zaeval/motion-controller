@@ -4,8 +4,8 @@ import Testing
 
 /// Replays the recorded taps, flicks, swipes and parking gestures through the analyzer and the mode controller.
 struct GestureFixtureTests {
-    /// A swipe-left clip where the hand turned over instead of travelling, so nothing may fire but a right switch
-    /// would still be a wrong-direction bug.
+    /// A swipe-left clip where the hand turned over instead of travelling, so nothing may fire but a switch to the
+    /// next desktop would still be a wrong-direction bug.
     static let handTurnedInsteadOfTravelling: Set<String> = ["20260912-021156-swipe-left.json"]
 
     static func analyze(_ recording: SwipeFixtureTests.Recording) -> [(frame: PoseFrame, reading: GestureReading?)] {
@@ -145,8 +145,12 @@ struct GestureFixtureTests {
                 case .normal:
                     commands += evaluator.update(reading, at: time).filter { !$0.isContinuousStep }
                 case .desktop:
-                    if let swipe = analyzer.lastSwipe {
-                        commands += evaluator.update(nil, swipe: swipe, at: time).filter { !$0.isContinuousStep }
+                    // Mirrors Pipeline: the sweep and the pump are all this mode hears.
+                    commands += evaluator.update(reading, swipe: analyzer.lastSwipe, at: time).filter {
+                        switch $0 {
+                        case .desktop, .media(.playPause): true
+                        default: false
+                        }
                     }
                 default: break
                 }
@@ -160,13 +164,16 @@ struct GestureFixtureTests {
                 feed(nil, personPresent: false, at: last + Double(step) / 30)
             }
             let label = "\(recording.name): \(commands)"
-            if Self.handTurnedInsteadOfTravelling.contains(recording.name) {
-                #expect(!commands.contains { $0 == .desktop(.previous) }, "\(label)")
+            if recording.name.contains("pang") {
+                // The user's own "팡팡" takes: each one plays or pauses exactly once, and nothing else.
+                #expect(commands == [.media(.playPause)], "\(label)")
+            } else if Self.handTurnedInsteadOfTravelling.contains(recording.name) {
+                #expect(!commands.contains { $0 == .desktop(.next) }, "\(label)")
             } else if recording.name.contains("swipe-left") {
                 // Recorded before swipes needed a held palm, so they may rightly fire nothing (SwipeFixtureTests).
-                #expect(commands.allSatisfy { $0 == .desktop(.next) }, "\(label)")
-            } else if recording.name.contains("swipe-right") {
                 #expect(commands.allSatisfy { $0 == .desktop(.previous) }, "\(label)")
+            } else if recording.name.contains("swipe-right") {
+                #expect(commands.allSatisfy { $0 == .desktop(.next) }, "\(label)")
             } else {
                 #expect(commands.isEmpty, "\(label)")
             }
@@ -242,6 +249,13 @@ struct GestureFixtureTests {
                     #expect(changes.last == .idle && !changes.contains(.pointer), "\(label)")
                 } else if recording.name.contains("left-click"), start == .normal {
                     #expect(changes.allSatisfy { $0 == .pointer }, "\(label)")
+                } else if recording.name.contains("pang"), start == .normal {
+                    // Holding the palm out before pumping it can open desktop mode, which is why the pump is heard
+                    // there too; nothing else may happen.
+                    #expect(changes.allSatisfy { $0 == .desktop }, "\(label)")
+                } else if recording.name.contains("swipe"), start == .normal {
+                    // A palm held out is how desktop mode is entered now, so these may reach it — and nothing else.
+                    #expect(changes.allSatisfy { $0 == .desktop }, "\(label)")
                 } else {
                     #expect(changes.isEmpty, "\(label)")
                 }

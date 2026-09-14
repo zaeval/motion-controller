@@ -70,6 +70,11 @@ struct FaceEnrollmentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
             switch pipeline.enrollmentStatus {
+            case .off where !pipeline.faceUnlockAvailable:
+                // Nothing to enrol into yet: offer the download here rather than a disabled menu item with no
+                // explanation (the user's complaint, 2026-09-14).
+                FaceModelInstallView(pipeline: pipeline)
+                Button("닫기", action: close)
             case .off:
                 Text("누구의 얼굴인가요?").font(.title3.bold())
                 TextField("이름", text: $name)

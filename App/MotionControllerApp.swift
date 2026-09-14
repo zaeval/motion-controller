@@ -41,8 +41,9 @@ private struct MenuContent: View {
             set: { appState.pipeline.lockEnabled = $0 }
         ))
         .disabled(appState.pipeline.enrolledFaces.isEmpty)
+        // Not disabled without the model any more: the panel offers to install it.
         Button(appState.pipeline.enrolledFaces.isEmpty ? "얼굴 등록…" : "얼굴 추가…") { appState.showEnrollment() }
-            .disabled(!appState.isEnabled || !appState.pipeline.faceUnlockAvailable)
+            .disabled(!appState.isEnabled)
         if !appState.pipeline.enrolledFaces.isEmpty {
             Menu("등록된 얼굴 \(appState.pipeline.enrolledFaces.faces.count)명") {
                 ForEach(appState.pipeline.enrolledFaces.faces) { face in

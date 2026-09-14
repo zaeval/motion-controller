@@ -6,7 +6,8 @@ struct ModeControllerTests {
     private static let frame = 1.0 / 30
 
     private func reading(
-        _ pose: StaticPose? = nil, fist: Bool = false, tap: FingerTap? = nil, idleGesture: Bool = false, at time: TimeInterval
+        _ pose: StaticPose? = nil, fist: Bool = false, tap: FingerTap? = nil, idleGesture: Bool = false,
+        at time: TimeInterval
     ) -> GestureReading {
         GestureReading(
             timestamp: time, chirality: .right, pose: fist ? .fist : pose, isPinching: pose == .pinch, pinchAxis: nil,
@@ -147,11 +148,11 @@ struct ModeControllerTests {
         #expect(controller.mode == .pointer)
     }
 
-    @Test func aHeldPalmOpensDesktopModeAndAFistLeavesIt() {
+    @Test func aPalmOpensDesktopModeStraightAwayAndAFistLeavesIt() {
         var controller = ModeController()
-        // Shorter than the hold: showing a palm in passing is not asking for anything.
-        #expect(feed(&controller, from: 0, seconds: 0.4) { reading(.openPalm, at: $0) }.isEmpty)
-        #expect(feed(&controller, from: 0.5, seconds: 0.9) { reading(.openPalm, at: $0) } == [.desktop])
+        // A frame or two of palm is enough — no hold, at the user's request (2026-09-14) — but not a single frame.
+        #expect(feed(&controller, from: 0, seconds: 0.06) { reading(.openPalm, at: $0) }.isEmpty)
+        #expect(feed(&controller, from: 0.07, seconds: 0.3) { reading(.openPalm, at: $0) } == [.desktop])
         // Only the sweep is recognized there, and a held fist is still the way back to gesture mode.
         #expect(feed(&controller, from: 1.5, seconds: 0.8) { reading(fist: true, at: $0) } == [.normal])
     }

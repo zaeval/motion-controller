@@ -46,8 +46,8 @@ struct SwipeDetectorTests {
     @Test func aHandThatNeverStoodStillNeverSwitches() {
         var detector = SwipeDetector()
         #expect(feed(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.7, 0.6), seconds: 0.3, at: 0).isEmpty)
-        // Too short a pause.
-        _ = feed(&detector, from: Vec2(0.7, 0.6), seconds: 0.2, at: 2)
+        // Too short a pause: shorter than `armSeconds`, which is 0.15 s since the user asked for the wait to go.
+        _ = feed(&detector, from: Vec2(0.7, 0.6), seconds: 0.08, at: 2)
         #expect(!detector.isArmed)
         #expect(feed(&detector, from: Vec2(0.7, 0.6), to: Vec2(0.4, 0.6), seconds: 0.3, at: 2.2).isEmpty)
     }

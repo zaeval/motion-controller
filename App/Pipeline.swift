@@ -172,6 +172,12 @@ final class Pipeline {
     /// Photos saved of people trying to use the Mac while it was locked.
     private(set) var intruderPhotoCount = 0
 
+    /// The face model is loaded, so enrollment and face unlock can work. Observable rather than computed, because
+    /// `FaceModelInstaller` can turn it on while the app runs.
+    private(set) var faceUnlockAvailable = false
+    /// How the model download is going, for the panels that offer it.
+    private(set) var faceModelInstall = FaceModelInstaller.Step.idle
+
     /// The menu's opt-in. Locking also needs an enrolled face, the Accessibility permission and a way to authenticate.
     var lockEnabled = UserDefaults.standard.bool(forKey: Pipeline.lockKey) {
         didSet {
@@ -182,12 +188,11 @@ final class Pipeline {
         }
     }
 
-    /// The face model is in the app, so face unlock and enrollment can work.
-    var faceUnlockAvailable: Bool { faceSource.isAvailable }
-
     var preferredHand: Chirality = .right
 
-    var handSourceMode: HandSourceMode = .bodyWithHands {
+    /// (B) by default: the hand request keeps tracking a hand held over the user's own face or chest, which (A)
+    /// loses along with the body observation.
+    var handSourceMode: HandSourceMode = .handsPlusBody {
         didSet {
             handSource.mode = handSourceMode
             visionError = nil
@@ -204,6 +209,7 @@ final class Pipeline {
 
     @ObservationIgnored private var recentOutputs: [(time: TimeInterval, milliseconds: Double)] = []
     @ObservationIgnored private var lastVisionErrorTime: TimeInterval?
+    @ObservationIgnored private var lastStatsLog: TimeInterval = -.infinity
     @ObservationIgnored private var recordedFrames: [PoseFrame] = []
     @ObservationIgnored private var recordingTask: Task<Void, Never>?
     @ObservationIgnored private var recordingLabel = ""
@@ -237,6 +243,7 @@ final class Pipeline {
             Task { @MainActor in self?.receiveFace(output) }
         }
         sceneIsDark = forcedDark
+        faceUnlockAvailable = faceSource.isAvailable
         loadFaces()
         screenLock.onAuthenticated = { [weak self] in
             self?.endLock("🔓 Touch ID·암호로 잠금 해제", byOwner: true)
@@ -620,9 +627,34 @@ final class Pipeline {
         try JSONEncoder().encode(faces).write(to: Self.facesURL, options: .atomic)
     }
 
-    /// Whether the face model is in the app bundle. Without it there is nothing to enrol into, so the tutorial
-    /// offers the download instead of the panel.
-    var faceModelInstalled: Bool { faceSource.isAvailable }
+    /// Downloads and compiles the face model, then loads it — the user asked (2026-09-14) for a button instead of
+    /// commands to paste, and pasting them was only half the job anyway: a model in the source tree does nothing
+    /// until the app is built again.
+    func installFaceModel() {
+        switch faceModelInstall {
+        case .downloading, .compiling: return
+        default: break
+        }
+        faceModelInstall = .downloading(nil)
+        logMotion("⬇️ 얼굴 모델 내려받기")
+        Task { [weak self] in
+            do {
+                try await FaceModelInstaller.install { step in
+                    Task { @MainActor in self?.faceModelInstall = step }
+                }
+                guard let self else { return }
+                faceSource.reload()
+                faceUnlockAvailable = faceSource.isAvailable
+                updateFaceChecks()
+                faceModelInstall = faceUnlockAvailable ? .installed : .failed("설치했지만 모델을 불러오지 못했습니다")
+                logMotion(faceUnlockAvailable ? "🙂 얼굴 모델 설치 완료 · 얼굴 등록 가능" : "⚠️ 얼굴 모델을 불러오지 못함")
+            } catch {
+                Self.logger.error("Face model install failed: \(String(describing: error), privacy: .public)")
+                self?.faceModelInstall = .failed(error.localizedDescription)
+                self?.logMotion("⚠️ 얼굴 모델 설치 실패")
+            }
+        }
+    }
 
     /// Face checks run only while something needs them, and never in a room too dark to recognize a face in: a
     /// locked screen then waits for Touch ID or the password instead (`ScreenLock`, which darkness never touches),
@@ -891,8 +923,16 @@ final class Pipeline {
             if analyzer.isSwipeArmed != swipeArmed {
                 swipeArmed = analyzer.isSwipeArmed
             }
-            // Only the sweep. No poses, no pinch drags, no zoom: the user's call (2026-09-14) was that once the
-            // palm has opened this mode, left and right are the only things it should hear.
+            // The sweep and the pump, nothing else — no pinch drags, no zoom, no held poses. The user's call
+            // (2026-09-14) was that this mode hear left and right only, and the pump is here because a palm held out
+            // for a moment is already this mode: play/pause would be unreachable if it weren't.
+            let desktopActions = actionEvaluator.update(reading, swipe: analyzer.lastSwipe, at: time).filter {
+                switch $0 {
+                case .desktop, .media(.playPause): true
+                default: false
+                }
+            }
+            dispatch(desktopActions)
             guard let swipe = analyzer.lastSwipe else { break }
             swipeCounts[swipe, default: 0] += 1
             logMotion(swipe == .left ? "👋 ← 왼쪽 스와이프" : "👋 → 오른쪽 스와이프")
@@ -903,7 +943,6 @@ final class Pipeline {
                 guard !Task.isCancelled else { return }
                 self?.lastSwipe = nil
             }
-            dispatch(actionEvaluator.update(nil, swipe: swipe, at: time))
 
         case .idle:
             break
@@ -1090,6 +1129,12 @@ final class Pipeline {
     }
 
     private func updateStats(with output: HandSource.Output) {
+        // Every five seconds: what the Vision mode costs and whether hands are actually being found, readable off the
+        // log after the fact. The debug preview shows the same numbers live.
+        if output.frame.timestamp - lastStatsLog >= 5 {
+            lastStatsLog = output.frame.timestamp
+            Self.logger.notice("Vision \(self.handSourceMode.rawValue, privacy: .public) \(self.stats.fps, format: .fixed(precision: 1), privacy: .public) fps \(output.processingMilliseconds, format: .fixed(precision: 1), privacy: .public) ms · bodies \(output.frame.bodies.count, privacy: .public) hands \(output.frame.allHands.count, privacy: .public) (loose \(output.frame.looseHands.count, privacy: .public))")
+        }
         recentOutputs.append((output.frame.timestamp, output.processingMilliseconds))
         if recentOutputs.count > 60 {
             recentOutputs.removeFirst(recentOutputs.count - 60)

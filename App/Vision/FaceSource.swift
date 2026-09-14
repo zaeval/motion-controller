@@ -29,10 +29,17 @@ final class FaceSource: Sendable {
     private static let interval: TimeInterval = 0.25
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "Face")
     private let state = OSAllocatedUnfairLock(initialState: State())
-    private let embedder = FaceEmbedder.load()
+    private let embedder = OSAllocatedUnfairLock<FaceEmbedder?>(initialState: FaceEmbedder.load())
 
-    /// False when the model is missing from the app: face unlock and enrollment can't work.
-    var isAvailable: Bool { embedder != nil }
+    /// False when there is no model to run: face unlock and enrollment can't work.
+    var isAvailable: Bool { embedder.withLock { $0 != nil } }
+
+    /// Picks up a model that `FaceModelInstaller` put in place while the app was running, so enrollment opens without
+    /// a relaunch.
+    func reload() {
+        let loaded = FaceEmbedder.load()
+        embedder.withLock { $0 = loaded }
+    }
 
     var wanted: Bool {
         get { state.withLock { $0.wanted } }
@@ -45,7 +52,7 @@ final class FaceSource: Sendable {
 
     /// Called on the camera queue with every frame; almost all of them return right away.
     func process(_ pixelBuffer: CVPixelBuffer, at time: TimeInterval) {
-        guard let embedder else { return }
+        guard let embedder = embedder.withLock({ $0 }) else { return }
         let starts = state.withLock {
             guard $0.wanted, !$0.busy, time - $0.lastStart >= Self.interval else { return false }
             $0.busy = true
@@ -104,9 +111,12 @@ private final class FaceEmbedder: @unchecked Sendable {
         self.model = model
     }
 
+    /// A model installed at runtime wins over one built into the app bundle: the installed one is what the user
+    /// just downloaded, and a rebuild is not needed to pick it up.
     static func load() -> FaceEmbedder? {
-        guard let url = Bundle.main.url(forResource: "AdaFace_IR18", withExtension: "mlmodelc") else {
-            logger.error("Face model missing from the app bundle: face unlock is off")
+        let installed = FaceModelInstaller.isInstalled ? FaceModelInstaller.installedURL : nil
+        guard let url = installed ?? Bundle.main.url(forResource: FaceModelInstaller.modelName, withExtension: "mlmodelc") else {
+            logger.error("No face model installed or in the app bundle: face unlock is off")
             return nil
         }
         do {

@@ -85,13 +85,13 @@ struct ActionEvaluatorTests {
     @Test func zoomingAndSwipingDoNotTriggerEachOther() {
         // The hand coming back from a swipe can read as three fingers on the move.
         var swiped = ActionEvaluator()
-        #expect(swiped.update(reading(.openPalm, still: false, at: 0), swipe: .right, at: 0) == [.desktop(.previous)])
+        #expect(swiped.update(reading(.openPalm, still: false, at: 0), swipe: .right, at: 0) == [.desktop(.next)])
         #expect(swiped.update(reading(.threeFingers, still: false, zoomStep: 1, at: 0.5), at: 0.5).isEmpty)
         // A zooming hand that drifts sideways isn't switching desktops.
         var zoomed = ActionEvaluator()
         #expect(zoomed.update(reading(.threeFingers, zoomStep: 1, at: 0), at: 0) == [.keyCombo(.zoomIn)])
         #expect(zoomed.update(reading(.threeFingers, still: false, at: 0.6), swipe: .left, at: 0.6).isEmpty)
-        #expect(zoomed.update(reading(.openPalm, still: false, at: 2), swipe: .left, at: 2) == [.desktop(.next)])
+        #expect(zoomed.update(reading(.openPalm, still: false, at: 2), swipe: .left, at: 2) == [.desktop(.previous)])
     }
 
     @Test func pinchTravelStepsVolumeAndBrightness() {
@@ -106,18 +106,19 @@ struct ActionEvaluatorTests {
 
     @Test func aPoseRightAfterASwipeIsJustTheHandComingBack() {
         var evaluator = ActionEvaluator()
-        #expect(evaluator.update(reading(.openPalm, still: false, at: 0), swipe: .right, at: 0) == [.desktop(.previous)])
+        #expect(evaluator.update(reading(.openPalm, still: false, at: 0), swipe: .right, at: 0) == [.desktop(.next)])
         // Swiping rotates the hand and pulls it back in: that in-and-out is not a pump.
         #expect(feed(&evaluator, from: 0.03, seconds: 1.0) { reading(.openPalm, pump: true, at: $0) }.isEmpty)
         // Well past the swipe, a pump is meant again.
         #expect(evaluator.update(reading(.openPalm, pump: true, at: 1.2), at: 1.2) == [.media(.playPause)])
     }
 
-    @Test func swipingSwitchesDesktopsLikeATrackpad() {
+    @Test func swipingGoesWhereTheHandPoints() {
         var evaluator = ActionEvaluator()
-        // Toward the user's left is the next desktop.
-        #expect(evaluator.update(reading(.openPalm, still: false, at: 0), swipe: .right, at: 0) == [.desktop(.previous)])
-        #expect(evaluator.update(reading(.openPalm, still: false, at: 1), swipe: .left, at: 1) == [.desktop(.next)])
+        // Sweeping toward the user's right goes to the desktop on the right: their call, 2026-09-13 and again
+        // 2026-09-14 when a build shipped the trackpad-like opposite.
+        #expect(evaluator.update(reading(.openPalm, still: false, at: 0), swipe: .right, at: 0) == [.desktop(.next)])
+        #expect(evaluator.update(reading(.openPalm, still: false, at: 1), swipe: .left, at: 1) == [.desktop(.previous)])
         evaluator.settings.swipesSwitchDesktops = false
         #expect(evaluator.update(reading(.openPalm, still: false, at: 2), swipe: .right, at: 2).isEmpty)
     }

@@ -66,6 +66,118 @@ struct RecordingTraces {
         }
     }
 
+    /// `PALM_GATES=1 swift test --filter RecordingTraces` prints, per recording, how the open-palm gates behave: how
+    /// often all four fingers read extended, what the tips-off-palm openness actually measures, and how many of those
+    /// frames the `openHandMinOpenness` mark keeps out. The user's palm sits on that mark (2026-09-14: "손바닥이 잘
+    /// 인식이 안되는데"), so this is the number to look at first.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["PALM_GATES"] != nil))
+    func printPalmGates() throws {
+        let marks = [0.29, 0.25, 0.20, 0.16]
+        var totals = [Double: Int](), all4 = 0, unknownFlag = 0, noFacing = 0
+        var everyOpenness: [Double] = []
+        for recording in try SwipeFixtureTests.recordings(containing: ProcessInfo.processInfo.environment["PALM_LABEL"] ?? "") {
+            var hands = 0, extendedAll = 0, unknown = 0, facingless = 0
+            var openness: [Double] = []
+            var passes = [Double: Int]()
+            for frame in recording.frames {
+                guard let hand = SwipeFixtureTests.trackedHand(in: frame), let features = HandFeatures(hand) else { continue }
+                hands += 1
+                let flags = Finger.allCases.map { features.isExtended($0) }
+                if flags.contains(where: { $0 == nil }) { unknown += 1; unknownFlag += 1 }
+                guard flags.allSatisfy({ $0 == true }) else { continue }
+                extendedAll += 1
+                all4 += 1
+                if features.palmFacesCamera == nil { facingless += 1; noFacing += 1 }
+                guard let value = features.openness else { continue }
+                openness.append(value)
+                everyOpenness.append(value)
+                for mark in marks where value >= mark {
+                    passes[mark, default: 0] += 1
+                    totals[mark, default: 0] += 1
+                }
+            }
+            guard extendedAll > 0 else { continue }
+            let sorted = openness.sorted()
+            print(String(
+                format: "%@ hands %3d all4 %3d (unknown %2d, no facing %2d) openness %.2f/%.2f/%.2f  %@",
+                recording.name.padding(toLength: 42, withPad: " ", startingAt: 0),
+                hands, extendedAll, unknown, facingless,
+                sorted.first ?? 0, sorted[sorted.count / 2], sorted.last ?? 0,
+                marks.map { String(format: "≥%.2f %3d", $0, passes[$0] ?? 0) }.joined(separator: "  ")
+            ))
+        }
+        let sorted = everyOpenness.sorted()
+        print(String(
+            format: "ALL: all-four-extended frames %d (a finger unknown on %d, no facing on %d) openness %.2f…%.2f median %.2f",
+            all4, unknownFlag, noFacing, sorted.first ?? 0, sorted.last ?? 0, sorted[max(sorted.count / 2, 0)]
+        ))
+        for mark in marks {
+            print(String(format: "  ≥%.2f keeps %d of %d (%.0f%%)", mark, totals[mark] ?? 0, all4,
+                         Double(totals[mark] ?? 0) / Double(max(all4, 1)) * 100))
+        }
+    }
+
+    /// `PUMP_TRACE=pang swift test --filter RecordingTraces` prints every frame of the "팡팡" recordings: the hand's
+    /// apparent size against the rolling baseline `PalmPumpDetector` uses, the pose it was classified as, how far the
+    /// palm has drifted from where it started, and the frames the shipped settings fire on.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["PUMP_TRACE"] != nil))
+    func printPumpTrace() throws {
+        let label = ProcessInfo.processInfo.environment["PUMP_TRACE"] ?? "pang"
+        let settings = PalmPumpDetector.Settings()
+        for recording in try SwipeFixtureTests.recordings(containing: label == "1" ? "pang" : label) {
+            print("── \(recording.name)")
+            var analyzer = GestureAnalyzer()
+            var recent: [(time: TimeInterval, scale: Double)] = []
+            var firstAnchor: Vec2?
+            var fires: [TimeInterval] = []
+            let start = recording.frames.first?.timestamp ?? 0
+            for frame in recording.frames {
+                let hand = SwipeFixtureTests.trackedHand(in: frame)
+                let reading = analyzer.update(hand: hand, at: frame.timestamp)
+                let time = frame.timestamp - start
+                guard let reading, let hand, let features = HandFeatures(hand), let anchor = features.anchor else {
+                    print(String(format: "%5.2f  —", time))
+                    continue
+                }
+                recent.append((frame.timestamp, features.scale))
+                recent.removeAll { frame.timestamp - $0.time > settings.baselineWindow }
+                let baseline = recent.map(\.scale).min() ?? features.scale
+                if firstAnchor == nil, reading.pose == .openPalm { firstAnchor = anchor }
+                if reading.palmPump { fires.append(time) }
+                // Which gate a frame that isn't an open palm failed: the extended flags per finger, how far the
+                // tips stand off the palm, and whether the palm's facing could be worked out at all.
+                let extended = Finger.allCases.map { finger -> String in
+                    switch features.isExtended(finger) {
+                    case true?: "o"
+                    case false?: "x"
+                    default: "?"
+                    }
+                }.joined()
+                print(String(
+                    format: "%5.2f  scale %.3f  base %.3f  out %+.3f  at (%.2f,%.2f) drift %.3f  ext %@  open %@  facing %@  %@%@%@",
+                    time, features.scale, baseline, features.scale / baseline - 1,
+                    anchor.x, anchor.y,
+                    firstAnchor.map { anchor.distance(to: $0) } ?? 0,
+                    extended,
+                    features.openness.map { String(format: "%.2f", $0) } ?? " -- ",
+                    features.palmFacesCamera.map { $0 ? "cam" : "back" } ?? " ? ",
+                    reading.pose == .openPalm ? "palm" : String(describing: reading.pose),
+                    reading.isFist ? " fist" : "",
+                    reading.palmPump ? "  ⏯ FIRE" : ""
+                ))
+            }
+            let scales = recording.frames.compactMap { frame -> Double? in
+                SwipeFixtureTests.trackedHand(in: frame).flatMap { HandFeatures($0) }.map(\.scale)
+            }
+            print(String(
+                format: "   fires %d at %@ · scale %.3f…%.3f (spread %+.0f%%)",
+                fires.count, fires.map { String(format: "%.2f", $0) }.joined(separator: ","),
+                scales.min() ?? 0, scales.max() ?? 0,
+                ((scales.max() ?? 0) / (scales.min() ?? 1) - 1) * 100
+            ))
+        }
+    }
+
     /// `RENDER_HANDS=scroll RENDER_DIR=/some/dir swift test --filter RecordingTraces` draws the tracked hand of every
     /// frame as a contact sheet, mirrored like the preview and centered on the palm so finger movement stands out.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["RENDER_HANDS"] != nil))

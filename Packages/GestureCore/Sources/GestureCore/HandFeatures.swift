@@ -20,7 +20,13 @@ public struct PoseThresholds: Codable, Equatable, Sendable {
     /// The thumb is extended when thumbTip→indexMCP exceeds this many hand sizes.
     public var thumbExtendedRatio = 0.50
     /// An open hand also needs this much openness: angle bands alone can't see fingers curled toward the camera.
-    public var openHandMinOpenness = 0.29
+    /// Lowered from 0.29 on 2026-09-14 — the user's flat palm sat right on that mark, so a quarter of the frames
+    /// where all four fingers clearly read as extended weren't an open palm ("손바닥이 잘 인식이 안되는데"), and the
+    /// pose flickered in and out several times a second. Their own recordings measure 0.26…0.43 with the palm held
+    /// flat at the camera (553 all-four-extended frames across every recording: 0.29 keeps 75%, 0.20 keeps 90%).
+    /// It stays clear of `closedHandMaxOpenness` 0.15, and all-four-extended is the real gate anyway — this one only
+    /// catches fingers curled straight toward the camera, where the angles can't see the curl.
+    public var openHandMinOpenness = 0.20
     /// At or below this openness, with no finger extended, the hand reads as closed.
     public var closedHandMaxOpenness = 0.15
     /// A closed hand is a fist only with the index tucked shorter than this (hand sizes). Recorded fists tuck it to

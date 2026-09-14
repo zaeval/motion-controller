@@ -67,7 +67,7 @@ public struct ActionEvaluator: Sendable {
         }
         if settings.swipesSwitchDesktops, let swipe, time - lastZoomStep > settings.swipeCooldownAfterZoom {
             lastSwipe = time
-            actions.append(.desktop(swipe == .left ? .next : .previous))
+            actions.append(.desktop(swipe == .right ? .next : .previous))
             // A swipe starts from the same still palm that plays or pauses: the palm that swept wasn't lowered.
             for index in mapped.indices {
                 mapped[index].machine.reset()

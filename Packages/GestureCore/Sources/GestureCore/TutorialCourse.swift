@@ -32,7 +32,9 @@ public enum TutorialStep: String, CaseIterable, Sendable {
     /// gesture at all.
     public var requiredMode: InteractionMode? {
         switch self {
-        case .playPause, .zoom, .volumeBrightness: .normal
+        // The pump works in desktop mode as well, and a palm held out on the way to pumping it often lands there.
+        case .zoom, .volumeBrightness: .normal
+        case .playPause: nil
         case .switchDesktop: .desktop
         case .moveCursor, .click, .rightClick, .scroll, .drag, .backToGestures: .pointer
         case .enterGestures, .enterDesktop, .enterCursor, .park, .enrollFace, .calibrateCursor: nil

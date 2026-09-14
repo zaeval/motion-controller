@@ -50,9 +50,10 @@ public struct ModeController: Sendable {
     public struct Settings: Codable, Equatable, Sendable {
         /// A tap folds the hand for a frame or two; a fist has to outlast that.
         public var fist = GestureStateMachine.Timing(candidateFrames: 3, holdSeconds: 0.35, cooldownSeconds: 0.5)
-        /// Longer than `SwipeDetector.armSeconds` (0.3), so holding the palm settles into the mode before a sweep
-        /// could mean anything, and the hold that got there leaves the first sweep already armed.
-        public var palmHold = GestureStateMachine.Timing(candidateFrames: 4, holdSeconds: 0.6, cooldownSeconds: 0.5)
+        /// No real hold: a palm opens desktop mode as directly as a fist opens gesture mode (the user's call,
+        /// 2026-09-14 — waiting 0.6 s for it felt like being kept out of the mode). Three frames and a hair, so a
+        /// single mistracked frame in some other gesture can't flip the mode.
+        public var palmHold = GestureStateMachine.Timing(candidateFrames: 3, holdSeconds: 0.05, cooldownSeconds: 0.5)
         /// The second of two taps must complete within this long of the first.
         public var doubleTapWindow: TimeInterval = 0.7
         /// Pointer mode falls back to gesture mode once its hand has been gone this long.
@@ -145,6 +146,9 @@ public struct ModeController: Sendable {
         }
         // Only from gesture mode: the palm is how the cursor's hand looks between taps, and idle is meant to stay
         // quiet until a fist wakes it.
+        // No hold and no stillness: the user asked (2026-09-14) that this mode open as directly as a fist opens
+        // gesture mode. A palm is unambiguous — nothing else in gesture mode uses it — and the pump that also starts
+        // from a palm is heard in desktop mode too, so arriving there mid-pump costs nothing.
         let palming = mode == .normal && reading.pose == .openPalm && !reading.isFist
         if palm.update(detected: palming, handStill: reading.isStill, at: time) {
             return change(to: .desktop, because: .palmHold)

@@ -97,6 +97,7 @@ public struct GestureAnalyzer: Sendable {
     /// frame it lands on often has no hand — and a reading on such a frame would read as a hand being present.
     public private(set) var lastSwipe: SwipeDirection?
 
+
     /// The palm has held still, and sweeping it sideways now switches desktops.
     public var isSwipeArmed: Bool { swipe.isArmed }
 

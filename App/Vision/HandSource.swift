@@ -5,9 +5,15 @@ import os
 import Vision
 
 enum HandSourceMode: String, CaseIterable, Identifiable, Sendable {
-    /// (A) One body-pose request with `detectsHands`; hands arrive already attached to people.
+    /// (A) One body-pose request with `detectsHands`; hands arrive already attached to people. Cheaper, but a hand
+    /// only exists as part of a person: hold it in front of your own face or chest and the body observation goes,
+    /// taking the hand with it. That is why it is no longer the default — the user, 2026-09-14: "몸이나 얼굴 가릴때마다
+    /// 검지가 풀린다".
     case bodyWithHands
-    /// (B) Hand pose every frame plus body pose at 10 fps, attached by wrist boxes.
+    /// (B) Hand pose every frame plus body pose at 10 fps, attached by wrist boxes. The hand request doesn't need to
+    /// see a body, so a hand over the face keeps tracking; one that matches no body arrives as a loose hand, which
+    /// `PoseFrame.allHands` includes. Chirality comes from Vision's own `chirality` rather than from which arm it
+    /// hangs off.
     case handsPlusBody
 
     var id: String { rawValue }
@@ -24,7 +30,7 @@ final class HandSource: Sendable {
     }
 
     private struct State: Sendable {
-        var mode: HandSourceMode = .bodyWithHands
+        var mode: HandSourceMode = .handsPlusBody
         var busy = false
         var cachedBodies: [Body] = []
         var cachedBodiesTime: TimeInterval = -.infinity

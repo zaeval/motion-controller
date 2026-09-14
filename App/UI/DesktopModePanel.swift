@@ -49,9 +49,8 @@ struct DesktopModeView: View {
     var body: some View {
         ZStack {
             frame
+            // Middle of the screen, not the bottom: the user couldn't see it down there (2026-09-14).
             badge
-                .frame(maxHeight: .infinity, alignment: .bottom)
-                .padding(.bottom, 96)
         }
         .ignoresSafeArea()
         // Nothing here is ever clickable, and the panel already ignores the mouse; this keeps hit-testing off the
@@ -75,7 +74,7 @@ struct DesktopModeView: View {
 
     private var badge: some View {
         HStack(spacing: 20) {
-            arrow("chevron.left", caption: "다음", lit: pipeline.lastSwipe == .left)
+            arrow("chevron.left", caption: "이전", lit: pipeline.lastSwipe == .left)
             VStack(spacing: 6) {
                 Text("🖐 데스크탑 전환 모드")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
@@ -83,7 +82,7 @@ struct DesktopModeView: View {
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(.secondary)
             }
-            arrow("chevron.right", caption: "이전", lit: pipeline.lastSwipe == .right)
+            arrow("chevron.right", caption: "다음", lit: pipeline.lastSwipe == .right)
         }
         .padding(.horizontal, 34)
         .padding(.vertical, 22)
@@ -96,12 +95,14 @@ struct DesktopModeView: View {
 
     private var hint: String {
         if pipeline.modeProgress > 0 { return "✊ 주먹을 유지하면 제스처 모드로" }
-        return pipeline.swipeArmed ? "준비됨 · 손을 옆으로 쓸어 주세요" : "손바닥을 잠시 멈추면 준비됩니다"
+        let ready = pipeline.swipeArmed ? "준비됨 · 손을 옆으로 쓸어 주세요" : "손을 멈추면 곧 준비됩니다"
+        return ready + " · 팡팡 = 재생/정지"
     }
 
     /// The arrow on the side the hand just swept toward lights up, so a sweep that worked is visibly answered. Its
-    /// caption says which desktop that sweep goes to — sweeping left moves to the next one, the way the trackpad's
-    /// three-finger swipe does — because the two directions are impossible to guess and easy to get backwards.
+    /// caption says which desktop that sweep goes to: the hand points at the desktop it wants, so sweeping right
+    /// goes to the next one. That is the opposite of the trackpad's three-finger swipe, and it is the user's own
+    /// call — made on 2026-09-13 and made again on 2026-09-14 when a build shipped the trackpad direction.
     private func arrow(_ symbol: String, caption: String, lit: Bool) -> some View {
         VStack(spacing: 2) {
             Image(systemName: symbol)

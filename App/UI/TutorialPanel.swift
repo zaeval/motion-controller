@@ -137,7 +137,7 @@ extension TutorialStep {
     var instruction: String {
         switch self {
         case .enterGestures, .backToGestures: "주먹을 쥐고 잠깐 그대로 있어 보세요."
-        case .enterDesktop: "손바닥을 카메라에 보인 채 잠시 멈춰 보세요. 화면에 보라색 테두리가 생깁니다."
+        case .enterDesktop: "손바닥을 카메라에 보여 보세요. 바로 화면에 보라색 테두리가 생깁니다."
         case .switchDesktop: "그대로 손을 옆으로 크게 쓸어 보세요."
         case .playPause: "손바닥을 펴고, 카메라 쪽으로 두 번 빠르게 팡팡 움직여 보세요."
         case .enrollFace: "얼굴을 등록하면 사람이 없을 때 화면이 까매지고 잠깁니다. 건너뛰어도 됩니다."
@@ -157,8 +157,8 @@ extension TutorialStep {
     var tip: String? {
         switch self {
         case .enterGestures, .backToGestures: "오버레이의 '✊ 제스처 모드로 전환' 막대가 다 차면 돼요."
-        case .enterDesktop: "이 모드에서는 좌우로 쓰는 것만 인식해요. 나올 때는 주먹을 쥐거나 검지로 톡톡 하세요."
-        case .switchDesktop: "왼쪽으로 쓸면 다음, 오른쪽으로 쓸면 이전 데스크톱이에요. 한 번 더 하려면 손바닥을 잠깐 멈추면 돼요."
+        case .enterDesktop: "이 모드에서는 좌우로 쓸기와 팡팡(재생/정지)만 인식해요. 나올 때는 주먹을 쥐거나 검지로 톡톡 하세요."
+        case .switchDesktop: "오른쪽으로 쓸면 다음, 왼쪽으로 쓸면 이전 데스크톱이에요. 연속으로 할 때는 손을 멈췄다가(0.15초) 다시 쓸면 돼요."
         case .playPause: "손을 앞으로 쭉 내밀 필요는 없어요. 손바닥을 펴고 가볍게 두 번 튕기면 됩니다. 주먹을 쥐면 취소돼요."
         case .enrollFace: "여러 번 등록하면 인식이 좋아져요. 메뉴에서 언제든 다시 할 수 있어요."
         case .calibrateCursor: "커서가 손끝을 따라가요. 측정이 이상하면 '다시 측정'을 누르면 돼요. 메뉴의 '커서 영역 보정'으로 언제든 다시 할 수 있어요."
@@ -247,32 +247,13 @@ struct TutorialView: View {
         }
     }
 
-    /// The last two missions aren't gestures: they open a panel. Enrolling needs the face model, so when it isn't
-    /// installed the mission shows how to get it instead of a button that could only fail.
+    /// The last two missions aren't gestures: they open a panel. Enrolling needs the face model, so when there
+    /// isn't one the mission offers to install it (a button, since 2026-09-14) instead of a button that could only
+    /// fail.
     @ViewBuilder
     private func setup(_ step: TutorialStep) -> some View {
-        if step == .enrollFace, !pipeline.faceModelInstalled {
-            VStack(alignment: .leading, spacing: 8) {
-                Text("얼굴 인식 모델이 없어서 등록을 할 수 없어요.")
-                    .font(.headline)
-                Text("라이선스 때문에 저장소에 넣지 않았습니다 (약 44MB). 아래를 터미널에 붙여넣으면 내려받기부터 다시 빌드까지 됩니다. 첫 줄의 경로는 project.yml이 있는 폴더로 바꿔 주세요. 빌드가 끝나면 앱을 다시 실행하세요.")
-                    .font(.callout)
-                    .foregroundStyle(.secondary)
-                    .wrapping()
-                Text(Self.modelInstall)
-                    .font(.system(.caption, design: .monospaced))
-                    .textSelection(.enabled)
-                    .padding(8)
-                    .frame(maxWidth: .infinity, alignment: .leading)
-                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
-                HStack {
-                    Button("명령 복사") {
-                        NSPasteboard.general.clearContents()
-                        NSPasteboard.general.setString(Self.modelInstall, forType: .string)
-                    }
-                    Button("건너뛰기") { session.skip() }
-                }
-            }
+        if step == .enrollFace, !pipeline.faceUnlockAvailable {
+            FaceModelInstallView(pipeline: pipeline) { session.skip() }
         } else if step == .enrollFace {
             Button("얼굴 등록 시작") { onEnroll() }
                 .controlSize(.large)
@@ -281,17 +262,6 @@ struct TutorialView: View {
                 .controlSize(.large)
         }
     }
-
-    /// The README's steps 2 and 3, as one paste. The rebuild is in there because the model only reaches the app
-    /// through it, and the paths are relative, so it starts by going to the repo. No `#` comments in here: zsh
-    /// doesn't take them at an interactive prompt (interactive_comments is off), so a commented line pasted in
-    /// becomes `cd: too many arguments` and everything after it runs in the wrong directory.
-    private static let modelInstall = """
-        cd "$HOME/motion controller"
-        curl -L -o /tmp/AdaFace_IR18.mlpackage.zip https://github.com/john-rocky/CoreML-Models/releases/download/adaface-v1/AdaFace_IR18.mlpackage.zip
-        mkdir -p App/Vision/Models && unzip -o /tmp/AdaFace_IR18.mlpackage.zip -d App/Vision/Models
-        xcodegen generate && xcodebuild -project MotionController.xcodeproj -scheme MotionController -configuration Debug -derivedDataPath build/DerivedData build
-        """
 
     private func mission(_ step: TutorialStep, course: TutorialCourse) -> some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -377,10 +347,14 @@ struct TutorialView: View {
             return "지금은 \(mode.displayName) 모드예요. 먼저 ✊ 주먹을 잠깐 유지해 제스처 모드로 들어오세요."
         case .pointer? where mode != .pointer:
             return "지금은 \(mode.displayName) 모드예요. 먼저 ☝️ 검지를 두 번 톡톡 해 커서 모드로 들어오세요."
+        case .desktop? where mode != .desktop:
+            return "지금은 \(mode.displayName) 모드예요. 먼저 🖐 손바닥을 카메라에 보여 데스크탑 전환 모드로 들어오세요."
         default:
             break
         }
         switch (step, mode) {
+        case (.playPause, .pointer), (.playPause, .idle):
+            return "재생/정지는 제스처 모드나 데스크탑 전환 모드에서 돼요. ✊ 주먹을 잠깐 유지해 보세요."
         case (.enterGestures, .normal): return "이미 제스처 모드예요. ✊ 주먹을 쥔 채 뒤로 빼 IDLE로 갔다가 다시 해 보세요."
         case (.enterCursor, .pointer): return "이미 커서 모드예요. ✊ 주먹을 유지해 나갔다가 다시 해 보세요."
         case (.park, .idle): return "이미 IDLE이에요. ✊ 주먹을 유지해 제스처 모드로 들어왔다가 다시 해 보세요."
