@@ -37,6 +37,10 @@ enum AccessibilityZoom {
     /// "키보드 단축키로 확대/축소 사용".
     static var keysEnabled: Bool { flag("closeViewHotkeysEnabled") }
 
+    /// Whether macOS will zoom the screen at all: one of the two switches is on. The tutorial's zoom mission waits
+    /// for this, because without it the gesture can only reach the front app's own zoom.
+    static var screenZoomAvailable: Bool { scrollEnabled || keysEnabled }
+
     /// Smooth screen zoom if it is on, stepped screen zoom if that is, else the app's own zoom.
     static var style: Style {
         if scrollEnabled { return .scroll }

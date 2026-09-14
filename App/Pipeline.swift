@@ -181,6 +181,9 @@ final class Pipeline {
     /// the tutorial shows it, since the user can change it in System Settings while this runs.
     var zoomStyle: AccessibilityZoom.Style { AccessibilityZoom.style }
 
+    /// macOS will zoom the screen: the tutorial's zoom mission waits for this.
+    var screenZoomAvailable: Bool { AccessibilityZoom.screenZoomAvailable }
+
     func openZoomSettings() {
         AccessibilityZoom.openSettings()
     }

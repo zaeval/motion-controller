@@ -43,6 +43,12 @@ final class TutorialPanelController: NSObject, NSWindowDelegate {
         self.session = session
         pipeline.parkForTutorial()
         pipeline.onTutorialEvent = { [weak session] event in
+            // The zoom mission can't be passed while macOS's own zoom is switched off: without it the gesture reaches
+            // the front app's ⌘+ at best, which isn't what the mission is teaching. It waits for the user to turn it
+            // on and press 확인 (their design, 2026-09-14).
+            if case .zoomed = event, session?.course.current == .zoom, !AccessibilityZoom.screenZoomAvailable {
+                return
+            }
             session?.record(event)
         }
         panel.contentView = NSHostingView(rootView: TutorialView(
@@ -207,6 +213,10 @@ struct TutorialView: View {
     let onEnroll: () -> Void
     let onCalibrate: () -> Void
     let close: () -> Void
+    /// Bumped by the 확인 button so the setting is read again; `AccessibilityZoom` has no way to tell us itself.
+    @State private var zoomChecks = 0
+    /// 확인 was pressed and the setting was still off, so the panel can say so rather than look like it did nothing.
+    @State private var zoomStillOff = false
 
     private var toggleShortcut: String {
         KeyboardShortcuts.getShortcut(for: .toggleEnabled)?.description ?? "⌃⌥⌘G"
@@ -291,26 +301,57 @@ struct TutorialView: View {
         }
     }
 
-    /// What a zoom gesture will reach on this Mac, with the way to change it. Screen zoom is a 손쉬운 사용 feature
-    /// and both of its switches are off until someone turns them on — which nothing this app does can do for them,
-    /// so the mission says which one is on and opens the pane (the user asked for exactly that, 2026-09-14).
+    /// Whether macOS will actually zoom the screen. Re-read whenever `zoomChecks` changes, which is what the 확인
+    /// button is for: this app can't be told when a System Settings checkbox is ticked.
+    private var zoomReady: Bool {
+        _ = zoomChecks
+        return pipeline.screenZoomAvailable
+    }
+
+    /// The gate on the zoom mission: screen zoom is a 손쉬운 사용 feature, both of its switches are off until someone
+    /// turns them on, and nothing this app does can turn them on. So the mission explains it, opens the pane, and
+    /// waits to be told to look again (the user's design, 2026-09-14).
     @ViewBuilder
-    private var zoomSetting: some View {
-        let style = pipeline.zoomStyle
-        VStack(alignment: .leading, spacing: 6) {
-            Text(style == .app ? "지금은 앱 확대로 보냅니다" : "지금은 \(style.displayName)로 보냅니다")
-                .font(.callout.weight(.semibold))
-            if style == .app {
-                Text("화면 전체를 확대하려면 손쉬운 사용의 확대/축소를 켜야 해요. '스크롤 제스처와 보조 키를 함께 사용하여 확대/축소'를 켜면 부드럽게 확대되고, '키보드 단축키로 확대/축소 사용'을 켜면 단계별로 확대됩니다. 켜면 다음 제스처부터 바로 적용돼요.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+    private var zoomGate: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Text("먼저 macOS의 화면 확대를 켜 주세요")
+                .font(.headline)
+            Text("확대/축소는 손쉬운 사용의 기능이라, 꺼져 있으면 어떤 앱도 화면을 확대할 수 없어요 (⌃ + 스크롤이 안 되는 것도 같은 이유예요). 아래 버튼으로 설정을 열고 **'스크롤 제스처와 보조 키를 함께 사용하여 확대/축소'** 또는 **'키보드 단축키로 확대/축소 사용'** 중 하나를 켜 주세요.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
+                .wrapping()
+            HStack {
+                Button("설정 열기") { pipeline.openZoomSettings() }
+                    .buttonStyle(.borderedProminent)
+                Button("켰어요 · 확인") {
+                    zoomChecks += 1
+                    zoomStillOff = !pipeline.screenZoomAvailable
+                }
+                Button("건너뛰기") { session.skip() }
+            }
+            if zoomStillOff {
+                Text("아직 꺼져 있어요. 설정에서 체크박스를 켠 다음 다시 확인을 눌러 주세요.")
+                    .font(.callout)
+                    .foregroundStyle(.orange)
                     .wrapping()
             }
-            Button("손쉬운 사용 > 확대/축소 열기") { pipeline.openZoomSettings() }
         }
         .padding(10)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+        .background(Color.orange.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+    }
+
+    /// Once it is on: which of the two it will use, since they behave differently.
+    private var zoomReadyNote: some View {
+        HStack(spacing: 8) {
+            Text("✅ \(pipeline.zoomStyle.displayName) 사용 중")
+                .font(.callout.weight(.semibold))
+            Button("설정 열기") { pipeline.openZoomSettings() }
+                .buttonStyle(.link)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.green.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
     }
 
     private func mission(_ step: TutorialStep, course: TutorialCourse) -> some View {
@@ -351,12 +392,16 @@ struct TutorialView: View {
                 .font(.title3)
             }
             if step == .zoom {
-                HStack(spacing: 16) {
-                    Text(course.zoomedIn ? "✅ 확대" : "⬜ 확대")
-                    Text(course.zoomedOut ? "✅ 축소" : "⬜ 축소")
+                if zoomReady {
+                    HStack(spacing: 16) {
+                        Text(course.zoomedIn ? "✅ 확대" : "⬜ 확대")
+                        Text(course.zoomedOut ? "✅ 축소" : "⬜ 축소")
+                    }
+                    .font(.headline)
+                    zoomReadyNote
+                } else {
+                    zoomGate
                 }
-                .font(.headline)
-                zoomSetting
             }
             if step == .moveCursor {
                 ProgressView(value: Double(min(course.cursorFrames, TutorialCourse.cursorFrames)), total: Double(TutorialCourse.cursorFrames))
