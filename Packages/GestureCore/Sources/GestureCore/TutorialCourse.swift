@@ -43,6 +43,13 @@ public enum TutorialStep: String, CaseIterable, Sendable {
     public var opensPanel: Bool {
         self == .enrollFace || self == .calibrateCursor
     }
+
+    /// How many times the mission has to be done before it is cleared. Three, so a gesture is learnt rather than
+    /// stumbled into once (the user's call, 2026-09-14); the two setup missions are a button press, and pressing it
+    /// three times would be nonsense.
+    public var repetitions: Int {
+        opensPanel ? 1 : 3
+    }
 }
 
 /// The user's way through the tutorial (asked for 2026-09-14: clear each feature by trying it). Pure, so which event
@@ -56,6 +63,8 @@ public struct TutorialCourse: Equatable, Sendable {
     public private(set) var zoomedIn = false
     public private(set) var zoomedOut = false
     public private(set) var cursorFrames = 0
+    /// How many times the current mission has been done, out of `current?.repetitions`.
+    public private(set) var done = 0
 
     public init() {}
 
@@ -97,6 +106,13 @@ public struct TutorialCourse: Equatable, Sendable {
             clears = false
         }
         guard clears else { return nil }
+        // Each go resets what the mission counts, so the next one starts from scratch.
+        zoomedIn = false
+        zoomedOut = false
+        cursorFrames = 0
+        done += 1
+        guard done >= step.repetitions else { return nil }
+        done = 0
         index += 1
         return step
     }
@@ -104,6 +120,7 @@ public struct TutorialCourse: Equatable, Sendable {
     public mutating func skip() {
         guard let step = current else { return }
         skipped.insert(step)
+        done = 0
         index += 1
     }
 }

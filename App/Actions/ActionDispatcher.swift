@@ -12,6 +12,8 @@ import QuartzCore
 /// macOS drops the events silently.
 final class ActionDispatcher: @unchecked Sendable {
     private static let minimumGap: TimeInterval = 0.006
+    /// Scroll lines per zoom step under ⌃: about as much as one notch of a wheel, so a step feels like a step.
+    private static let zoomScrollLines = 3
     private static let modifierKeyCodes: [Modifier: CGKeyCode] = [
         .command: 0x37, .shift: 0x38, .option: 0x3A, .control: 0x3B,
     ]
@@ -35,7 +37,8 @@ final class ActionDispatcher: @unchecked Sendable {
         for action in actions {
             switch action {
             case .media(let key): post(key)
-            case .keyCombo(let combo): post(Self.substituting(combo))
+            case .keyCombo(let combo) where combo == .zoomIn || combo == .zoomOut: zoom(in: combo == .zoomIn)
+            case .keyCombo(let combo): post(combo)
             case .desktop(let direction):
                 if !DesktopSwitcher.switchDesktop(direction) {
                     unsupported.append(action)
@@ -45,18 +48,31 @@ final class ActionDispatcher: @unchecked Sendable {
         return unsupported
     }
 
-    /// ⌥⌘= / ⌥⌘- zoom the whole screen, but only while macOS's own zoom shortcuts are switched on — and they are
-    /// off by default, which is why nothing happened on this Mac (`closeViewHotkeysEnabled = 0`, and the user
-    /// confirmed ⌃-scroll zoom did nothing either). With them off, ⌘+ / ⌘- is sent instead, which zooms the app in
-    /// front and needs no system setting. Read fresh each time: the user can turn the setting on without a relaunch.
-    static func substituting(_ combo: KeyCombo) -> KeyCombo {
-        guard combo == .zoomIn || combo == .zoomOut, !screenZoomShortcutsEnabled else { return combo }
-        return KeyCombo(keyCode: combo.keyCode, modifiers: [.command])
+    /// Asks for whichever zoom macOS is set up for (`AccessibilityZoom`): ⌃-scroll if the scroll gesture is on,
+    /// ⌥⌘= / ⌥⌘- if the keyboard shortcuts are, and the front app's own ⌘+ / ⌘- if neither is — that one needs no
+    /// setting but only zooms that app. Decided per step, so ticking the box takes effect on the next gesture.
+    private func zoom(in zoomingIn: Bool) {
+        switch AccessibilityZoom.style {
+        case .scroll: postControlScroll(in: zoomingIn)
+        case .keys: post(zoomingIn ? .zoomIn : .zoomOut)
+        case .app: post(KeyCombo(keyCode: zoomingIn ? KeyCombo.zoomIn.keyCode : KeyCombo.zoomOut.keyCode, modifiers: [.command]))
+        }
     }
 
-    /// System Settings > 손쉬운 사용 > 확대/축소 > "키보드 단축키로 확대/축소 사용".
-    static var screenZoomShortcutsEnabled: Bool {
-        UserDefaults(suiteName: "com.apple.universalaccess")?.bool(forKey: "closeViewHotkeysEnabled") ?? false
+    /// ⌃ held for real with a few scroll lines under it. The screen zoom reads the modifier state rather than the
+    /// scroll event's flags, so Control goes out as its own key event, the way the ⌘Tab combo does.
+    private func postControlScroll(in zoomingIn: Bool) {
+        guard let control = Self.modifierKeyCodes[.control] else { return }
+        enqueue(keyEvent(control, down: true, flags: .maskControl))
+        for _ in 0..<Self.zoomScrollLines {
+            let event = CGEvent(
+                scrollWheelEvent2Source: source, units: .line, wheelCount: 1,
+                wheel1: zoomingIn ? 1 : -1, wheel2: 0, wheel3: 0
+            )
+            event?.flags = .maskControl
+            enqueue(event)
+        }
+        enqueue(keyEvent(control, down: false, flags: []))
     }
 
     /// NX_KEYTYPE_* values from the SDK's ev_keymap.h.

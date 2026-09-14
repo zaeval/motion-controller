@@ -177,6 +177,14 @@ final class Pipeline {
     /// Photos saved of people trying to use the Mac while it was locked.
     private(set) var intruderPhotoCount = 0
 
+    /// What a zoom gesture will ask macOS for, and whether that is the screen or just the app in front. Read when
+    /// the tutorial shows it, since the user can change it in System Settings while this runs.
+    var zoomStyle: AccessibilityZoom.Style { AccessibilityZoom.style }
+
+    func openZoomSettings() {
+        AccessibilityZoom.openSettings()
+    }
+
     /// The face model is loaded, so enrollment and face unlock can work. Observable rather than computed, because
     /// `FaceModelInstaller` can turn it on while the app runs.
     private(set) var faceUnlockAvailable = false
@@ -1021,11 +1029,9 @@ final class Pipeline {
             return
         }
         let unsupported = dispatcher.apply(actions)
-        // Which zoom the keys will have asked for, so the log says why the screen did or didn't scale.
+        // Which zoom was asked for, so the log says why the screen did or didn't scale.
         if actions.contains(where: { $0 == .keyCombo(.zoomIn) || $0 == .keyCombo(.zoomOut) }) {
-            Self.logger.notice(
-                "Zoom sent as \(ActionDispatcher.screenZoomShortcutsEnabled ? "⌥⌘ screen zoom" : "⌘ app zoom", privacy: .public)"
-            )
+            Self.logger.notice("Zoom sent as \(AccessibilityZoom.style.displayName, privacy: .public)")
         }
         // Volume and brightness steps are summed up when the pinch ends instead.
         for action in actions where !action.isContinuousStep {

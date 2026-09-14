@@ -66,18 +66,38 @@ final class TutorialPanelController: NSObject, NSWindowDelegate {
     }
 }
 
-/// The course under way, and the mission that was just cleared, shown for a moment.
+/// The course under way, the mission just cleared and the go just completed — both worth saying something about
+/// (the user asked for the praise, 2026-09-14).
 @MainActor
 @Observable
 final class TutorialSession {
     private(set) var course = TutorialCourse()
     private(set) var justCleared: TutorialStep?
+    /// A go that landed without finishing the mission: 1 or 2 of three.
+    private(set) var justDid: Int?
+    /// Counts every clear, so the praise moves along the list instead of repeating one line.
+    private(set) var praised = 0
     @ObservationIgnored private var celebration: Task<Void, Never>?
+    @ObservationIgnored private var nudge: Task<Void, Never>?
 
     func record(_ event: TutorialEvent) {
-        guard let step = course.record(event) else { return }
+        let before = course.done
+        guard let step = course.record(event) else {
+            guard course.done > before else { return }
+            NSSound(named: "Pop")?.play()
+            justDid = course.done
+            nudge?.cancel()
+            nudge = Task { [weak self] in
+                try? await Task.sleep(for: .seconds(1.2))
+                guard !Task.isCancelled else { return }
+                self?.justDid = nil
+            }
+            return
+        }
         NSSound(named: "Glass")?.play()
         justCleared = step
+        justDid = nil
+        praised += 1
         celebration?.cancel()
         celebration = Task { [weak self] in
             try? await Task.sleep(for: .seconds(1.6))
@@ -89,7 +109,15 @@ final class TutorialSession {
     func skip() {
         course.skip()
         justCleared = nil
+        justDid = nil
     }
+
+    /// Said when a mission clears; a different one each time, so three missions in a row don't read as a form letter.
+    static let praise = [
+        "잘했어요! 🎉", "완벽해요! 👏", "손에 익었네요! 💪", "그거예요! ✨", "깔끔했어요! 🙌", "역시! 🔥",
+    ]
+
+    var praiseLine: String { Self.praise[max(praised - 1, 0) % Self.praise.count] }
 }
 
 extension TutorialStep {
@@ -162,7 +190,7 @@ extension TutorialStep {
         case .playPause: "손을 앞으로 쭉 내밀 필요는 없어요. 문을 두드리듯 가볍게 두 번이면 됩니다. 손을 펴면 취소되고, 주먹을 뒤로 뺀 채 가만히 있으면 IDLE이 돼요."
         case .enrollFace: "여러 번 등록하면 인식이 좋아져요. 메뉴에서 언제든 다시 할 수 있어요."
         case .calibrateCursor: "커서가 손끝을 따라가요. 측정이 이상하면 '다시 측정'을 누르면 돼요. 메뉴의 '커서 영역 보정'으로 언제든 다시 할 수 있어요."
-        case .zoom: "새끼손가락은 꼭 접어 주세요 — 네 손가락이 다 펴지면 손바닥으로 읽혀서 데스크탑 전환 모드로 갑니다. 시스템 설정 > 손쉬운 사용 > 확대/축소에서 '키보드 단축키로 확대/축소 사용'이 꺼져 있으면 화면 대신 앱 확대(⌘+/⌘-)로 보냅니다."
+        case .zoom: "새끼손가락은 꼭 접어 주세요 — 네 손가락이 다 펴지면 손바닥으로 읽혀서 데스크탑 전환 모드로 갑니다. 확대가 남으면 ⌥⌘8로 끄세요."
         case .volumeBrightness: "어느 쪽이든 한 번 바뀌면 클리어예요."
         case .enterCursor: "한 번 톡 하면 오버레이에 '한 번 더 톡'이 떠요."
         case .moveCursor: "커서가 화면 끝까지 안 가면 나중에 메뉴바 > 커서 영역 보정… 에서 맞출 수 있어요."
@@ -263,25 +291,72 @@ struct TutorialView: View {
         }
     }
 
+    /// What a zoom gesture will reach on this Mac, with the way to change it. Screen zoom is a 손쉬운 사용 feature
+    /// and both of its switches are off until someone turns them on — which nothing this app does can do for them,
+    /// so the mission says which one is on and opens the pane (the user asked for exactly that, 2026-09-14).
+    @ViewBuilder
+    private var zoomSetting: some View {
+        let style = pipeline.zoomStyle
+        VStack(alignment: .leading, spacing: 6) {
+            Text(style == .app ? "지금은 앱 확대로 보냅니다" : "지금은 \(style.displayName)로 보냅니다")
+                .font(.callout.weight(.semibold))
+            if style == .app {
+                Text("화면 전체를 확대하려면 손쉬운 사용의 확대/축소를 켜야 해요. '스크롤 제스처와 보조 키를 함께 사용하여 확대/축소'를 켜면 부드럽게 확대되고, '키보드 단축키로 확대/축소 사용'을 켜면 단계별로 확대됩니다. 켜면 다음 제스처부터 바로 적용돼요.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .wrapping()
+            }
+            Button("손쉬운 사용 > 확대/축소 열기") { pipeline.openZoomSettings() }
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .background(Color.secondary.opacity(0.1), in: RoundedRectangle(cornerRadius: 8))
+    }
+
     private func mission(_ step: TutorialStep, course: TutorialCourse) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if let cleared = session.justCleared {
-                Text("✅ \(cleared.title) 클리어!")
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("\(session.praiseLine) \(cleared.title) 클리어!")
+                        .font(.headline)
+                    Text(course.isFinished ? "전부 끝났어요. 이제 손으로 쓰면 됩니다." : "다음 미션으로 갈게요.")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .foregroundStyle(.green)
+                .padding(.vertical, 6)
+                .padding(.horizontal, 10)
+                .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+            } else if let did = session.justDid, let step = course.current {
+                Text("좋아요! \(did)/\(step.repetitions) · \(step.repetitions - did)번 더")
                     .font(.headline)
-                    .foregroundStyle(.green)
+                    .foregroundStyle(.blue)
                     .padding(.vertical, 6)
                     .padding(.horizontal, 10)
-                    .background(Color.green.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
+                    .background(Color.blue.opacity(0.12), in: RoundedRectangle(cornerRadius: 8))
             }
             Text(step.symbol).font(.system(size: 52))
             Text(step.title).font(.title.bold())
             Text(step.instruction).font(.title3).wrapping()
+            if step.repetitions > 1 {
+                HStack(spacing: 6) {
+                    ForEach(0..<step.repetitions, id: \.self) { index in
+                        Image(systemName: index < course.done ? "checkmark.circle.fill" : "circle")
+                            .foregroundStyle(index < course.done ? .green : .secondary)
+                    }
+                    Text("\(step.repetitions)번 하면 넘어가요")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                .font(.title3)
+            }
             if step == .zoom {
                 HStack(spacing: 16) {
                     Text(course.zoomedIn ? "✅ 확대" : "⬜ 확대")
                     Text(course.zoomedOut ? "✅ 축소" : "⬜ 축소")
                 }
                 .font(.headline)
+                zoomSetting
             }
             if step == .moveCursor {
                 ProgressView(value: Double(min(course.cursorFrames, TutorialCourse.cursorFrames)), total: Double(TutorialCourse.cursorFrames))
