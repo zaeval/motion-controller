@@ -66,6 +66,36 @@ struct RecordingTraces {
         }
     }
 
+    /// `HANDS_TRACE=<label> swift test --filter RecordingTraces` prints every hand of every frame with its
+    /// chirality, its size and what pose it reads as, and marks the one `Pipeline` would track. For "I was pointing
+    /// and it said palm" reports: with two hands up, the one being tracked may not be the one being watched.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["HANDS_TRACE"] != nil))
+    func printHandsTrace() throws {
+        for recording in try SwipeFixtureTests.recordings(containing: ProcessInfo.processInfo.environment["HANDS_TRACE"] ?? "") {
+            print("── \(recording.name)")
+            let start = recording.frames.first?.timestamp ?? 0
+            for frame in recording.frames {
+                let hands = frame.allHands.filter { $0.handSize != nil }
+                    .sorted { ($0.handSize ?? 0) > ($1.handSize ?? 0) }
+                let tracked = SwipeFixtureTests.trackedHand(in: frame)
+                let described = hands.map { hand -> String in
+                    let features = HandFeatures(hand)
+                    let pose = features.flatMap { GestureRules.classify($0, pinching: false) }
+                    let extended = features.map { current in
+                        Finger.allCases.map { current.isExtended($0) == true ? "o" : "x" }.joined()
+                    } ?? "----"
+                    let isTracked = tracked.map { $0.chirality == hand.chirality && $0.handSize == hand.handSize } ?? false
+                    return String(
+                        format: "%@%@ %.3f %@ %@", isTracked ? "▶" : " ", hand.chirality.rawValue.prefix(1).uppercased(),
+                        hand.handSize ?? 0, extended, pose.map { String(describing: $0) } ?? "-"
+                    )
+                }
+                print(String(format: "%5.2f  %d hands  %@", frame.timestamp - start, hands.count,
+                             described.joined(separator: " | ")))
+            }
+        }
+    }
+
     /// `PALM_GATES=1 swift test --filter RecordingTraces` prints, per recording, how the open-palm gates behave: how
     /// often all four fingers read extended, what the tips-off-palm openness actually measures, and how many of those
     /// frames the `openHandMinOpenness` mark keeps out. The user's palm sits on that mark (2026-09-14: "손바닥이 잘

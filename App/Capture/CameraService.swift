@@ -113,6 +113,9 @@ final class CameraService: NSObject, @unchecked Sendable {
     /// resolution: the widest 16:9 format no bigger than 1280×720 that runs at 30 fps, pinned at 30 fps so low light
     /// can't slow it. The session preset alone left the built-in camera at 1920×1080 and about 20 fps, and a format
     /// set before the session started came out at 1920×1080 anyway, so the output is told the size as well.
+    ///
+    /// 1920×1080 at 30 fps does exist on this camera and was tried (2026-09-14), to put more pixels on a small hand:
+    /// Vision went from 20 ms a frame to 79 ms, which is 14 fps. Resolution is not the way to find a small hand.
     private func selectFastFormat(for device: AVCaptureDevice) {
         let frameRate = Self.frameRate
         let candidates = device.formats.filter { format in

@@ -70,6 +70,12 @@ final class Pipeline {
     @ObservationIgnored private var pointer = PointerController()
     @ObservationIgnored private let mouse = MouseEventPoster()
     @ObservationIgnored private var actionEvaluator = ActionEvaluator()
+    /// The other hand's clicks, so the hand on the cursor never has to change shape.
+    @ObservationIgnored private var secondHand = SecondHandControl()
+    /// Which side is driving the cursor. Set by whichever hand starts moving it (the user's call, 2026-09-14) and
+    /// given up when that hand has been gone a moment while another one is there, so swapping hands works.
+    @ObservationIgnored private var cursorHandSide: Chirality?
+    @ObservationIgnored private var cursorHandMissingSince: TimeInterval?
     @ObservationIgnored private var onCalibrationEnd: (() -> Void)?
     @ObservationIgnored private let dispatcher = ActionDispatcher()
     @ObservationIgnored private var flashTask: Task<Void, Never>?
@@ -145,6 +151,8 @@ final class Pipeline {
     private(set) var awaitingSecondTap = false
     /// Gesture mode's palm has held still: sweeping it sideways now switches desktops.
     private(set) var swipeArmed = false
+    /// The shape the other hand is holding in cursor mode, for the overlay.
+    private(set) var secondHandPose: StaticPose?
     /// Someone is in front of the camera.
     private(set) var personPresent = false
     /// Too little light to believe the camera: the screen is left exactly as it is and no gesture acts. See
@@ -551,10 +559,27 @@ final class Pipeline {
 
     /// The hand to analyze until the operator lock exists: the preferred side if visible, else the largest hand.
     static func trackedHand(in frame: PoseFrame, preferring side: Chirality) -> HandFrame? {
-        let hands = frame.allHands
+        hands(in: frame, cursorSide: nil, preferring: side).cursor
+    }
+
+    /// The hand that drives everything, and the other one if there is a second hand in view.
+    ///
+    /// `cursorSide` is the side that has claimed the cursor; without one the preferred side wins, or the largest
+    /// hand. The other hand only counts when its own chirality is known and different: two observations of the same
+    /// hand would otherwise take turns being "the other one" and click by themselves.
+    static func hands(
+        in frame: PoseFrame, cursorSide: Chirality?, preferring side: Chirality
+    ) -> (cursor: HandFrame?, other: HandFrame?) {
+        var hands = frame.allHands
             .filter { $0.handSize != nil }
             .sorted { ($0.handSize ?? 0) > ($1.handSize ?? 0) }
-        return hands.first { $0.chirality == side } ?? hands.first
+        let index = cursorSide.flatMap { claimed in hands.firstIndex { $0.chirality == claimed } }
+            ?? hands.firstIndex { $0.chirality == side }
+            ?? (hands.isEmpty ? nil : 0)
+        guard let index else { return (nil, nil) }
+        let cursor = hands.remove(at: index)
+        let other = hands.first { $0.chirality != .unknown && $0.chirality != cursor.chirality }
+        return (cursor, other)
     }
 
     private func receive(_ output: HandSource.Output) {
@@ -835,7 +860,9 @@ final class Pipeline {
 
     private func analyze(_ frame: PoseFrame) {
         let time = frame.timestamp
-        let reading = analyzer.update(hand: Self.trackedHand(in: frame, preferring: preferredHand), at: time)
+        let tracked = Self.hands(in: frame, cursorSide: cursorHandSide, preferring: preferredHand)
+        updateCursorHandClaim(tracked, at: time)
+        let reading = analyzer.update(hand: tracked.cursor, at: time)
         latestReading = reading
         refreshAccessibility(at: time)
         // A tracked hand is proof enough that someone is there: a raised hand often hides the face from the camera.
@@ -944,6 +971,7 @@ final class Pipeline {
                 if status.scrolling { onTutorialEvent(.scrolled) }
                 if status.dragging { onTutorialEvent(.dragged) }
             }
+            applySecondHand(tracked.other, at: time)
 
         case .normal:
             // Swipes belong to desktop mode now, so the palm this mode watches for is only on its way there.
@@ -980,6 +1008,78 @@ final class Pipeline {
         case .idle:
             break
         }
+    }
+
+    /// The other hand's shape, turned into clicks and applied to the same pointer, so a press it holds makes the
+    /// cursor hand's movement a drag.
+    private func applySecondHand(_ hand: HandFrame?, at time: TimeInterval) {
+        let sample = hand.flatMap { hand -> SecondHandControl.Sample? in
+            guard let features = HandFeatures(hand, thresholds: analyzer.settings.thresholds),
+                  let anchor = features.anchor
+            else { return nil }
+            // No hysteresis needed on a hand that isn't holding anything: a pinch here only has to be recognized
+            // well enough not to read as a pointing finger.
+            let pinching = (features.pinchRatio ?? .infinity) <= analyzer.settings.pinch.engageRatio
+            return SecondHandControl.Sample(pose: GestureRules.classify(features, pinching: pinching), anchor: anchor)
+        }
+        let intents = secondHand.update(sample, at: time)
+        if secondHand.pose != secondHandPose {
+            secondHandPose = secondHand.pose
+        }
+        guard !intents.isEmpty else { return }
+        for intent in intents {
+            mouse.apply(pointer.apply(intent, at: time))
+            switch intent {
+            case .click:
+                logMotion("🤚 👆 클릭")
+                onTutorialEvent?(.clicked)
+            case .rightClick:
+                logMotion("🤚 ✌️ 우클릭")
+                onTutorialEvent?(.rightClicked)
+            case .press:
+                logMotion("🤚 ✊ 누름")
+                onTutorialEvent?(.dragged)
+            case .release:
+                logMotion("🤚 놓음")
+            case .scroll:
+                onTutorialEvent?(.scrolled)
+            }
+        }
+        let status = PointerStatus(
+            pressed: pointer.isPressed, dragging: pointer.isDragging, scrolling: pointer.isScrolling,
+            zooming: pointer.isZooming, engaged: pointerStatus.engaged
+        )
+        if status != pointerStatus {
+            pointerStatus = status
+        }
+    }
+
+    /// Whichever hand starts moving the cursor keeps it. It gives the claim up once it has been gone a moment with
+    /// another hand in view, so putting the cursor hand down and carrying on with the other one works.
+    private func updateCursorHandClaim(_ tracked: (cursor: HandFrame?, other: HandFrame?), at time: TimeInterval) {
+        guard mode == .pointer else {
+            cursorHandSide = nil
+            cursorHandMissingSince = nil
+            return
+        }
+        if let claimed = cursorHandSide {
+            guard tracked.cursor?.chirality != claimed else {
+                cursorHandMissingSince = nil
+                return
+            }
+            let since = cursorHandMissingSince ?? time
+            cursorHandMissingSince = since
+            if time - since >= 1, tracked.cursor != nil {
+                cursorHandSide = nil
+                cursorHandMissingSince = nil
+            }
+            return
+        }
+        // Not claimed yet: the first hand that actually moves the cursor takes it.
+        guard pointer.isPressed || pointerStatus.engaged, let side = tracked.cursor?.chirality, side != .unknown
+        else { return }
+        cursorHandSide = side
+        Self.logger.notice("Cursor hand: \(side.rawValue, privacy: .public)")
     }
 
     /// Feeds one frame to the calibration. A capture that lands only puts the panel's button up; `confirm` is what
@@ -1058,6 +1158,10 @@ final class Pipeline {
         actionEvaluator.reset()
         pendingAction = nil
         swipeArmed = false
+        secondHand.reset()
+        secondHandPose = nil
+        cursorHandSide = nil
+        cursorHandMissingSince = nil
         mode = newMode
         let reason = modeController.lastChangeReason
         onTutorialEvent?(.mode(newMode, because: reason))

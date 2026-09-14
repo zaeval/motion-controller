@@ -202,6 +202,8 @@ public struct PointerController: Sendable {
         /// Whether the button-down has gone out.
         var sent = false
         var dragging = false
+        /// Held by the other hand's fist rather than by this hand's pinch, so the pinch logic leaves it alone.
+        var external = false
     }
 
     public var settings: Settings
@@ -302,6 +304,36 @@ public struct PointerController: Sendable {
         return commands
     }
 
+    /// Applies what the other hand asked for (`SecondHandControl`). The press lives in here rather than beside it, so
+    /// that cursor movement while it is down is a drag, and so a lost hand, a mode change or quitting lets go of it
+    /// the way they let go of a pinch.
+    public mutating func apply(_ intent: SecondHandIntent, at time: TimeInterval) -> [PointerCommand] {
+        let at = cursor ?? Vec2(0.5, 0.5)
+        switch intent {
+        case .click:
+            guard press == nil else { return [] }
+            return click(at: at, clickCount: chainedClickCount(at: at, time: time), time: time)
+        case .rightClick:
+            guard press == nil else { return [] }
+            return [.rightClick(at)]
+        case .press:
+            guard press == nil else { return [] }
+            // Down at once and dragging from the start: a fist is a press, not a pinch that might turn out to be one.
+            // The offset keeps a parked cursor where it is until the hand moves, as a pinch's does.
+            press = Press(
+                downAt: at, downTime: time, clickCount: 1, offset: at - (target ?? at), sent: true, dragging: true,
+                external: true
+            )
+            return [.buttonDown(at, clickCount: 1)]
+        case .release:
+            return forceRelease()
+        case .scroll(let travel):
+            guard press == nil else { return [] }
+            // Image y grows upward, and a positive scroll goes up, so the travel carries straight over.
+            return [.scroll(settings.invertScroll ? -travel : travel)]
+        }
+    }
+
     /// Lets go of a held button without chaining into a double-click: mode changes, a lost hand, shutting down.
     /// A pinch whose button never went down just ends.
     public mutating func forceRelease() -> [PointerCommand] {
@@ -390,7 +422,7 @@ public struct PointerController: Sendable {
             target = at
             return
         }
-        guard var current = press else { return }
+        guard var current = press, !current.external else { return }
         if !sample.pinching {
             press = nil
             if current.sent {

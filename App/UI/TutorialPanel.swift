@@ -181,9 +181,9 @@ extension TutorialStep {
         case .enterCursor: "검지를 펴고 두 번 톡톡 굽혀 보세요."
         case .moveCursor: "검지를 카메라 쪽으로 살짝 굽힌 채 손을 움직여 보세요. 검지를 펴면 커서가 멈춰요."
         case .click: "검지를 한 번 톡 굽혔다 펴 보세요. 커서 아래가 클릭돼요."
-        case .rightClick: "브이(✌️)를 만든 채 검지만 톡 굽혀 보세요."
-        case .scroll: "브이(✌️) 모양으로 손을 위아래로 움직여 보세요."
-        case .drag: "엄지와 검지를 붙이면 누른 상태가 돼요. 붙인 채 움직였다가 떼 보세요."
+        case .rightClick: "브이(✌️)를 만든 채 검지만 톡 굽혀 보세요. 반대손으로 ✌️를 보여도 우클릭이에요."
+        case .scroll: "브이(✌️) 모양으로 손을 위아래로 움직여 보세요. 반대손 🖐 손바닥을 위아래로 움직여도 스크롤돼요."
+        case .drag: "엄지와 검지를 붙이면 누른 상태가 돼요. 붙인 채 움직였다가 떼 보세요. 반대손 ✊ 주먹으로 누른 채 커서 손을 움직이면 더 쉽습니다."
         case .park: "주먹을 쥔 채 손을 뒤로 빼 보세요."
         }
     }
@@ -200,7 +200,7 @@ extension TutorialStep {
         case .volumeBrightness: "어느 쪽이든 한 번 바뀌면 클리어예요."
         case .enterCursor: "한 번 톡 하면 오버레이에 '한 번 더 톡'이 떠요."
         case .moveCursor: "커서가 화면 끝까지 안 가면 나중에 메뉴바 > 커서 영역 보정… 에서 맞출 수 있어요."
-        case .click: "두 번 연달아 톡톡 하면 더블클릭이에요."
+        case .click: "두 번 연달아 톡톡 하면 더블클릭이에요. 반대손으로 ☝️ 검지를 보여도 클릭이에요 — 커서가 안 흔들립니다."
         case .park: "5초 동안 아무도 안 보여도 저절로 IDLE이 돼요."
         case .rightClick, .scroll, .drag: nil
         }
