@@ -75,7 +75,7 @@ struct DesktopModeView: View {
 
     private var badge: some View {
         HStack(spacing: 20) {
-            arrow("chevron.left", lit: pipeline.lastSwipe == .right)
+            arrow("chevron.left", caption: "다음", lit: pipeline.lastSwipe == .left)
             VStack(spacing: 6) {
                 Text("🖐 데스크탑 전환 모드")
                     .font(.system(size: 30, weight: .bold, design: .rounded))
@@ -83,7 +83,7 @@ struct DesktopModeView: View {
                     .font(.system(size: 16, weight: .medium))
                     .foregroundStyle(.secondary)
             }
-            arrow("chevron.right", lit: pipeline.lastSwipe == .left)
+            arrow("chevron.right", caption: "이전", lit: pipeline.lastSwipe == .right)
         }
         .padding(.horizontal, 34)
         .padding(.vertical, 22)
@@ -99,12 +99,18 @@ struct DesktopModeView: View {
         return pipeline.swipeArmed ? "준비됨 · 손을 옆으로 쓸어 주세요" : "손바닥을 잠시 멈추면 준비됩니다"
     }
 
-    /// The arrow the last switch went toward lights up, so a sweep that worked is visibly answered.
-    private func arrow(_ symbol: String, lit: Bool) -> some View {
-        Image(systemName: symbol)
-            .font(.system(size: 40, weight: .heavy))
-            .foregroundStyle(lit ? AnyShapeStyle(.purple) : AnyShapeStyle(.tertiary))
-            .scaleEffect(lit ? 1.15 : 1)
-            .animation(.snappy(duration: 0.25), value: lit)
+    /// The arrow on the side the hand just swept toward lights up, so a sweep that worked is visibly answered. Its
+    /// caption says which desktop that sweep goes to — sweeping left moves to the next one, the way the trackpad's
+    /// three-finger swipe does — because the two directions are impossible to guess and easy to get backwards.
+    private func arrow(_ symbol: String, caption: String, lit: Bool) -> some View {
+        VStack(spacing: 2) {
+            Image(systemName: symbol)
+                .font(.system(size: 40, weight: .heavy))
+            Text(caption)
+                .font(.system(size: 13, weight: .semibold))
+        }
+        .foregroundStyle(lit ? AnyShapeStyle(.purple) : AnyShapeStyle(.tertiary))
+        .scaleEffect(lit ? 1.15 : 1)
+        .animation(.snappy(duration: 0.25), value: lit)
     }
 }

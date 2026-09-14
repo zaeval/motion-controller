@@ -141,7 +141,7 @@ extension TutorialStep {
         case .switchDesktop: "그대로 손을 옆으로 크게 쓸어 보세요."
         case .playPause: "손바닥을 펴고, 카메라 쪽으로 두 번 빠르게 팡팡 움직여 보세요."
         case .enrollFace: "얼굴을 등록하면 사람이 없을 때 화면이 까매지고 잠깁니다. 건너뛰어도 됩니다."
-        case .calibrateCursor: "화면 네 모서리를 검지로 가리키면 커서가 손 위치에 정확히 붙습니다."
+        case .calibrateCursor: "화면 네 모서리를 검지로 가리키면 커서가 손 위치에 정확히 붙습니다. 모서리마다 버튼을 눌러 넘어가고, 네 모서리를 두 번 돌아 평균을 씁니다."
         case .zoom: "세 손가락을 펴고 위로 올려 확대, 아래로 내려 축소해 보세요."
         case .volumeBrightness: "엄지와 검지를 붙인 채 위아래로 움직이면 볼륨, 좌우로 움직이면 밝기가 바뀌어요."
         case .enterCursor: "검지를 펴고 두 번 톡톡 굽혀 보세요."
@@ -161,7 +161,7 @@ extension TutorialStep {
         case .switchDesktop: "왼쪽으로 쓸면 다음, 오른쪽으로 쓸면 이전 데스크톱이에요. 한 번 더 하려면 손바닥을 잠깐 멈추면 돼요."
         case .playPause: "손을 앞으로 쭉 내밀 필요는 없어요. 손바닥을 펴고 가볍게 두 번 튕기면 됩니다. 주먹을 쥐면 취소돼요."
         case .enrollFace: "여러 번 등록하면 인식이 좋아져요. 메뉴에서 언제든 다시 할 수 있어요."
-        case .calibrateCursor: "커서가 손끝을 따라가요. 메뉴의 '커서 영역 보정'으로 언제든 다시 할 수 있어요."
+        case .calibrateCursor: "커서가 손끝을 따라가요. 측정이 이상하면 '다시 측정'을 누르면 돼요. 메뉴의 '커서 영역 보정'으로 언제든 다시 할 수 있어요."
         case .zoom: "둘 다 하면 클리어예요. 확대가 남으면 ⌥⌘8로 끄세요. 화면이 안 바뀌면 시스템 설정 > 손쉬운 사용 > 확대/축소에서 키보드 단축키를 켜 주세요."
         case .volumeBrightness: "어느 쪽이든 한 번 바뀌면 클리어예요."
         case .enterCursor: "한 번 톡 하면 오버레이에 '한 번 더 톡'이 떠요."
@@ -255,7 +255,7 @@ struct TutorialView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("얼굴 인식 모델이 없어서 등록을 할 수 없어요.")
                     .font(.headline)
-                Text("라이선스 때문에 저장소에 넣지 않았습니다 (약 44MB). 터미널에 아래를 붙여넣고, 앱을 다시 빌드하면 등록이 열립니다.")
+                Text("라이선스 때문에 저장소에 넣지 않았습니다 (약 44MB). 터미널에 아래를 붙여넣으면 내려받기부터 다시 빌드까지 됩니다. 빌드가 끝나면 앱을 다시 실행하세요.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .wrapping()
@@ -282,11 +282,13 @@ struct TutorialView: View {
         }
     }
 
-    /// The README's step 2, as one paste.
+    /// The README's steps 2 and 3, as one paste. The rebuild is in there because the model only reaches the app
+    /// through it, and the paths are relative, so the first line says where to run it.
     private static let modelInstall = """
-        curl -L -o /tmp/AdaFace_IR18.mlpackage.zip \
-          https://github.com/john-rocky/CoreML-Models/releases/download/adaface-v1/AdaFace_IR18.mlpackage.zip
+        cd "$HOME/motion controller"   # project.yml이 있는 폴더
+        curl -L -o /tmp/AdaFace_IR18.mlpackage.zip https://github.com/john-rocky/CoreML-Models/releases/download/adaface-v1/AdaFace_IR18.mlpackage.zip
         mkdir -p App/Vision/Models && unzip -o /tmp/AdaFace_IR18.mlpackage.zip -d App/Vision/Models
+        xcodegen generate && xcodebuild -project MotionController.xcodeproj -scheme MotionController -configuration Debug -derivedDataPath build/DerivedData build
         """
 
     private func mission(_ step: TutorialStep, course: TutorialCourse) -> some View {

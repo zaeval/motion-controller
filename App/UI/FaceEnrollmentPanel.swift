@@ -91,7 +91,9 @@ struct FaceEnrollmentView: View {
             case .collecting:
                 Text("\(pipeline.enrollingName ?? name) · 카메라를 보고 잠시 있어 주세요").font(.title3.bold())
                 ProgressView(value: pipeline.enrollmentProgress)
-                Text(pipeline.enrollmentHint ?? "얼굴을 찾는 중…")
+                // Face checks don't run in a room too dark to recognize anyone in, so say that rather than let the
+                // progress bar sit at zero with no reason given.
+                Text(pipeline.sceneIsDark ? "🌑 조도가 부족해요 · 불을 켜 주세요" : pipeline.enrollmentHint ?? "얼굴을 찾는 중…")
                     .foregroundStyle(.secondary)
                 Text("사진은 저장하지 않아요. 얼굴에서 뽑은 숫자 512개만 이 Mac에 저장돼요.")
                     .font(.caption)

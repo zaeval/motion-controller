@@ -70,7 +70,6 @@ final class Pipeline {
     @ObservationIgnored private var pointer = PointerController()
     @ObservationIgnored private let mouse = MouseEventPoster()
     @ObservationIgnored private var actionEvaluator = ActionEvaluator()
-    @ObservationIgnored private var calibration: PointerCalibration?
     @ObservationIgnored private var onCalibrationEnd: (() -> Void)?
     @ObservationIgnored private let dispatcher = ActionDispatcher()
     @ObservationIgnored private var flashTask: Task<Void, Never>?
@@ -129,10 +128,9 @@ final class Pipeline {
     private(set) var pointerStatus = PointerStatus()
     /// The gesture-mode pose holding toward an action.
     private(set) var pendingAction: PendingAction?
-    /// The screen corner the calibration is waiting to be pointed at; nil when it isn't running.
-    private(set) var calibrationCorner: PointerCalibration.Corner?
-    private(set) var calibrationProgress = 0.0
-    private(set) var calibrationCount = 0
+    /// The calibration under way: the corner it wants, the round, how far the hold has come and whether it is
+    /// waiting for the panel's button. nil when it isn't running.
+    private(set) var calibrationState: PointerCalibration?
     /// Hold progress (0...1) of a fist toward gesture mode, for the overlay.
     private(set) var modeProgress = 0.0
     /// One index tap has landed; another switches to pointer mode.
@@ -238,6 +236,7 @@ final class Pipeline {
         faceSource.setHandler { [weak self] output in
             Task { @MainActor in self?.receiveFace(output) }
         }
+        sceneIsDark = forcedDark
         loadFaces()
         screenLock.onAuthenticated = { [weak self] in
             self?.endLock("🔓 Touch ID·암호로 잠금 해제", byOwner: true)
@@ -348,25 +347,39 @@ final class Pipeline {
         recentOutputs = []
     }
 
-    var isCalibrating: Bool { calibration != nil }
+    var isCalibrating: Bool { calibrationState != nil }
 
-    /// Starts asking for the four screen corners. `onEnd` runs when the last one lands or it is cancelled, so the
-    /// panel can go away.
+    /// Starts asking for the four screen corners, twice round. `onEnd` runs when the last capture is confirmed or it
+    /// is cancelled, so the panel can go away.
     func startCalibration(onEnd: @escaping () -> Void) {
         releasePointer()
         onCalibrationEnd = onEnd
-        let fresh = PointerCalibration()
-        calibration = fresh
-        calibrationCorner = fresh.corner
-        calibrationProgress = 0
-        calibrationCount = 0
-        logMotion("🎯 커서 영역 보정 시작")
+        calibrationState = PointerCalibration()
+        logMotion("🎯 커서 영역 보정 시작 · \(PointerCalibration.rounds)회 측정")
     }
 
     func cancelCalibration() {
-        guard calibration != nil else { return }
+        guard calibrationState != nil else { return }
         endCalibration()
         logMotion("🎯 보정 취소")
+    }
+
+    /// The panel's button: keep the capture that just landed and move on, or finish. Nothing is measured between the
+    /// capture and this, so the hand on its way to the next corner isn't mistaken for pointing at it.
+    func confirmCalibrationCorner() {
+        guard var current = calibrationState, current.awaitingConfirmation else { return }
+        let finished = current.confirm()
+        calibrationState = current
+        guard let finished else { return }
+        applyCalibratedBox(finished)
+    }
+
+    /// The panel's other button: that capture was wrong, ask for the same corner again.
+    func redoCalibrationCorner() {
+        guard var current = calibrationState, current.awaitingConfirmation else { return }
+        current.redo()
+        calibrationState = current
+        logMotion("🎯 다시 측정")
     }
 
     /// Back to the box fitted to the hand as it is seen.
@@ -611,9 +624,11 @@ final class Pipeline {
     /// offers the download instead of the panel.
     var faceModelInstalled: Bool { faceSource.isAvailable }
 
-    /// Face checks run only while something needs them.
+    /// Face checks run only while something needs them, and never in a room too dark to recognize a face in: a
+    /// locked screen then waits for Touch ID or the password instead (`ScreenLock`, which darkness never touches),
+    /// and no embedding of a near-black frame gets to be compared with anyone's.
     private func updateFaceChecks() {
-        faceSource.wanted = isRunning && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty))
+        faceSource.wanted = isRunning && !sceneIsDark && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty))
     }
 
     /// Locks input and parks recognition. False, with nothing locked, when locking can't work right now.
@@ -723,14 +738,22 @@ final class Pipeline {
     /// absence clock over, because `ScreenPresence` was not fed while dark and still remembers whoever was last
     /// seen before the lights went — without this, the first lit frame reads as a long absence and dims and locks
     /// the screen just as someone sits down.
+    ///
+    /// Going dark also lets go of anything the pointer is holding. Nothing feeds `PointerController` while dark, and
+    /// the release that a lost hand would trigger lives in that same path, so a pinch drag under way when the lights
+    /// went out would leave the mouse button down until they came back.
     private func receiveLight(_ luma: Double, at time: TimeInterval) {
         sceneLuma = luma
         guard let dark = sceneLight.update(luma: luma, at: time), !forcedDark else { return }
         sceneIsDark = dark
-        if !dark {
+        if dark {
+            releasePointer()
+        } else {
             _ = screenPresence.unlock(at: time)
         }
-        logMotion(dark ? "🌑 조도 부족 · 일시 중지" : "💡 조도 회복 · 다시 인식")
+        // A face the camera can't make out can't unlock anything; while dark, Touch ID and the password are the way in.
+        updateFaceChecks()
+        logMotion(dark ? "🌑 조도 부족 · 일시 중지" + (isLocked ? " · Touch ID로 해제" : "") : "💡 조도 회복 · 다시 인식")
         Self.logger.notice("""
             Scene \(dark ? "dark" : "lit", privacy: .public) at luma \
             \(luma, format: .fixed(precision: 3), privacy: .public)
@@ -768,7 +791,9 @@ final class Pipeline {
         // as an empty one, so acting on it would black out and lock the screen of someone sitting right there,
         // whose face is the way back in and is exactly what the camera can't make out. Nothing is dimmed, locked or
         // woken until the light is back, which also means the Mac's own idle and sleep timers apply again meanwhile.
-        // A screen already dark and locked when the light went stays that way; Touch ID and the password still get in.
+        // A screen already dark and locked when the light went stays that way, and the lock itself is untouched by
+        // any of this: the input tap, the Touch ID / password dialog and the photos all run as usual, because that is
+        // the one way back in when the camera can't see a face (user's call, 2026-09-14).
         if sceneIsDark {
             return
         }
@@ -788,7 +813,7 @@ final class Pipeline {
             screen.stayAwake(personPresent: present, at: time)
         }
 
-        if calibration != nil {
+        if calibrationState != nil {
             updateCalibration(reading, at: time)
             return
         }
@@ -885,30 +910,29 @@ final class Pipeline {
         }
     }
 
-    /// Feeds one frame to the calibration and applies the box that the last corner completes.
+    /// Feeds one frame to the calibration. A capture that lands only puts the panel's button up; `confirm` is what
+    /// moves on, so this never finishes the calibration by itself.
     private func updateCalibration(_ reading: GestureReading?, at time: TimeInterval) {
-        guard var current = calibration else { return }
-        let finished = current.update(reading?.pointer, at: time)
-        calibration = current
-        calibrationCorner = current.corner
-        calibrationProgress = current.progress
-        calibrationCount = current.capturedCount
-        guard let finished else { return }
+        guard var current = calibrationState else { return }
+        let captured = current.update(reading?.pointer, at: time)
+        calibrationState = current
+        guard captured, let corner = current.corner else { return }
+        logMotion("🎯 \(corner.displayName) \(current.round)회차 측정 · 버튼을 눌러 계속")
+    }
+
+    private func applyCalibratedBox(_ box: InteractionBox) {
         onTutorialEvent?(.cursorCalibrated)
-        pointer.settings.box = finished
-        if let data = try? JSONEncoder().encode(finished) {
+        pointer.settings.box = box
+        if let data = try? JSONEncoder().encode(box) {
             UserDefaults.standard.set(data, forKey: Self.boxKey)
         }
-        Self.logger.notice("Calibrated box \(String(describing: finished), privacy: .public)")
+        Self.logger.notice("Calibrated box \(String(describing: box), privacy: .public)")
         endCalibration()
         logMotion("🎯 커서 영역 보정 완료")
     }
 
     private func endCalibration() {
-        calibration = nil
-        calibrationCorner = nil
-        calibrationProgress = 0
-        calibrationCount = 0
+        calibrationState = nil
         onCalibrationEnd?()
         onCalibrationEnd = nil
     }

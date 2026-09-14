@@ -86,6 +86,8 @@ struct OverlayView: View {
         // rather than let it look broken.
         if pipeline.sceneIsDark {
             let luma = pipeline.sceneLuma.map { String(format: " (밝기 %.2f)", $0) } ?? ""
+            // A locked screen is still locked, and the face check that would open it can't see anything: say so.
+            if pipeline.isLocked { return "🌑 조도 부족 · Touch ID·암호로 해제\(luma)" }
             return "🌑 조도 부족 · 일시 중지\(luma)"
         }
         guard pipeline.personPresent else { return pipeline.mode == .idle ? "사람 없음" : "사람 없음 · 곧 IDLE" }
