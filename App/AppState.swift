@@ -136,6 +136,15 @@ final class AppState {
             }
         }
 
+        // MC_INSTALL_MODEL=1 runs the face model install the panels' button runs, so that path can be checked
+        // without clicking anything.
+        if ProcessInfo.processInfo.environment["MC_INSTALL_MODEL"] != nil {
+            Task {
+                try? await Task.sleep(for: .seconds(2))
+                pipeline.installFaceModel()
+            }
+        }
+
         // MC_DESKTOP_TEST=1 checks that the private Dock-swipe fields still switch desktops on this macOS: one
         // desktop over and back again, without needing a gesture.
         if ProcessInfo.processInfo.environment["MC_DESKTOP_TEST"] != nil {

@@ -667,6 +667,7 @@ final class Pipeline {
                 faceUnlockAvailable = faceSource.isAvailable
                 updateFaceChecks()
                 faceModelInstall = faceUnlockAvailable ? .installed : .failed("설치했지만 모델을 불러오지 못했습니다")
+                Self.logger.notice("Face model install finished: available \(self.faceUnlockAvailable, privacy: .public)")
                 logMotion(faceUnlockAvailable ? "🙂 얼굴 모델 설치 완료 · 얼굴 등록 가능" : "⚠️ 얼굴 모델을 불러오지 못함")
             } catch {
                 Self.logger.error("Face model install failed: \(String(describing: error), privacy: .public)")
@@ -1020,6 +1021,12 @@ final class Pipeline {
             return
         }
         let unsupported = dispatcher.apply(actions)
+        // Which zoom the keys will have asked for, so the log says why the screen did or didn't scale.
+        if actions.contains(where: { $0 == .keyCombo(.zoomIn) || $0 == .keyCombo(.zoomOut) }) {
+            Self.logger.notice(
+                "Zoom sent as \(ActionDispatcher.screenZoomShortcutsEnabled ? "⌥⌘ screen zoom" : "⌘ app zoom", privacy: .public)"
+            )
+        }
         // Volume and brightness steps are summed up when the pinch ends instead.
         for action in actions where !action.isContinuousStep {
             logMotion(action.displayName)

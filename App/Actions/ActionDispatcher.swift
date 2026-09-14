@@ -35,7 +35,7 @@ final class ActionDispatcher: @unchecked Sendable {
         for action in actions {
             switch action {
             case .media(let key): post(key)
-            case .keyCombo(let combo): post(combo)
+            case .keyCombo(let combo): post(Self.substituting(combo))
             case .desktop(let direction):
                 if !DesktopSwitcher.switchDesktop(direction) {
                     unsupported.append(action)
@@ -43,6 +43,20 @@ final class ActionDispatcher: @unchecked Sendable {
             }
         }
         return unsupported
+    }
+
+    /// ⌥⌘= / ⌥⌘- zoom the whole screen, but only while macOS's own zoom shortcuts are switched on — and they are
+    /// off by default, which is why nothing happened on this Mac (`closeViewHotkeysEnabled = 0`, and the user
+    /// confirmed ⌃-scroll zoom did nothing either). With them off, ⌘+ / ⌘- is sent instead, which zooms the app in
+    /// front and needs no system setting. Read fresh each time: the user can turn the setting on without a relaunch.
+    static func substituting(_ combo: KeyCombo) -> KeyCombo {
+        guard combo == .zoomIn || combo == .zoomOut, !screenZoomShortcutsEnabled else { return combo }
+        return KeyCombo(keyCode: combo.keyCode, modifiers: [.command])
+    }
+
+    /// System Settings > 손쉬운 사용 > 확대/축소 > "키보드 단축키로 확대/축소 사용".
+    static var screenZoomShortcutsEnabled: Bool {
+        UserDefaults(suiteName: "com.apple.universalaccess")?.bool(forKey: "closeViewHotkeysEnabled") ?? false
     }
 
     /// NX_KEYTYPE_* values from the SDK's ev_keymap.h.

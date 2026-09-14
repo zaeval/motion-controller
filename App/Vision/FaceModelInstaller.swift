@@ -49,7 +49,12 @@ enum FaceModelInstaller {
         try FileManager.default.createDirectory(
             at: installedURL.deletingLastPathComponent(), withIntermediateDirectories: true
         )
-        _ = try FileManager.default.replaceItemAt(installedURL, withItemAt: compiled)
+        // `replaceItemAt` throws when there is nothing to replace, which is every first install.
+        if FileManager.default.fileExists(atPath: installedURL.path) {
+            _ = try FileManager.default.replaceItemAt(installedURL, withItemAt: compiled)
+        } else {
+            try FileManager.default.moveItem(at: compiled, to: installedURL)
+        }
         logger.notice("Face model installed at \(installedURL.path, privacy: .public)")
         progress(.installed)
     }
