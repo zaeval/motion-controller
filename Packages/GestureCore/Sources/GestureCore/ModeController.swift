@@ -167,7 +167,9 @@ public struct ModeController: Sendable {
         // it makes one of their shapes. The fist below is still the deliberate way out.
         let elsewhere: Set<StaticPose> = [.threeFingers, .victory, .pointIndex, .pinch]
         let leaving = mode == .desktop && !reading.isFist && (reading.isPinching || reading.pose.map(elsewhere.contains) == true)
-        if other.update(detected: leaving, handStill: true, at: time) {
+        // Only from a hand that is holding still: a sweeping hand blurs and turns until it reads as a pinch or three
+        // fingers, and leaving the mode mid-stroke would swallow the sweep it is in the middle of.
+        if other.update(detected: leaving, handStill: reading.isStill, at: time) {
             return change(to: .normal, because: .otherPose)
         }
         let fisting = mode != .normal && reading.isFist && !parkingFistHeld && !holdingButton

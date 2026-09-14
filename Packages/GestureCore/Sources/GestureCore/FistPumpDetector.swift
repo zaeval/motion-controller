@@ -35,12 +35,16 @@ public struct FistPumpDetector: Sendable {
         /// It has to come back down this much of the way from the peak toward the baseline before the next push
         /// counts. Peak-relative, so a baseline that is still catching up doesn't hide the dip.
         public var returnDrop = 0.4
-        /// Frames in a row at the peak, so one mistracked frame isn't a pump.
-        public var peakFrames = 2
+        /// Frames in a row at the peak. One: a knock's peak lasts a single frame in the user's own takes (the second
+        /// knock of 224740 is above the mark for exactly one), and the hysteresis that keeps noise out is the return
+        /// — the hand has to come `returnDrop` of the way back down before another push counts at all.
+        public var peakFrames = 1
         /// Both pushes have to land within this long of the first one starting.
         public var window: TimeInterval = 1.2
-        /// How far the palm may wander during the pumps, in image heights: a sweep isn't a pump.
-        public var stillRadius = 0.08
+        /// How far the hand may wander while it knocks, in image heights. Generous: the user knocks while raising or
+        /// lowering the hand (their own takes travel 0.35 of the frame's height), and the sweep this used to guard
+        /// against needs a flat hand, so a fist can't be one.
+        public var stillRadius = 0.3
         /// The baseline is the smallest hand seen over this long.
         public var baselineWindow: TimeInterval = 1.5
         /// Nothing fires again this soon.

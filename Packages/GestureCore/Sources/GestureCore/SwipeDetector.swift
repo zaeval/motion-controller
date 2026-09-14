@@ -53,8 +53,9 @@ public struct SwipeDetector: Sendable {
         /// How long after a swipe the next one may start from a turning point rather than a standstill.
         public var repeatWindow: TimeInterval = 3.0
         /// How far back from the far end of a sweep the hand has to come before that end counts as a turning point,
-        /// in image heights.
-        public var reversalTravel = 0.02
+        /// in image heights. Bigger than the jitter a hand standing still shows (`stillRadius` allows 0.035 of it),
+        /// or tracking noise alone would keep declaring turning points.
+        public var reversalTravel = 0.045
         /// A sweep the other way that ends this close to where the last one started is the hand coming back rather
         /// than a sweep, in image heights. A stroke itself travels about 0.23 of those, so the two don't overlap.
         public var returnTolerance = 0.1
@@ -162,10 +163,11 @@ public struct SwipeDetector: Sendable {
             return nil
         }
         // Sweeping again doesn't mean standing still again: within `repeatWindow` of a swipe, the far end of each
-        // movement arms the next one.
-        if let last = lastFire, time - last.time <= settings.repeatWindow, sample.canArm {
+        // movement arms the next one. Only while nothing is armed — a stroke under way must keep the origin it
+        // started from, or jitter part way through would re-measure it from where it had already got to.
+        if hold == nil, let last = lastFire, time - last.time <= settings.repeatWindow, sample.canArm {
             armFromTurn(sample.anchor, previous: previousAnchor)
-        } else {
+        } else if hold == nil {
             turn = nil
         }
         guard var current = hold else { return nil }

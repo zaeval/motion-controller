@@ -12,10 +12,11 @@ import SwiftUI
 /// our overlay panels use — and covering the dialog would strand whoever is trying to get in.
 @MainActor
 final class LockBlurPanelController {
-    private let panel: NSPanel
+    /// One per display: the brightness comes back on every screen, so every screen needs covering.
+    private var panels: [NSPanel] = []
 
-    init() {
-        panel = NSPanel(
+    private static func makePanel() -> NSPanel {
+        let panel = NSPanel(
             contentRect: NSScreen.main?.frame ?? NSRect(x: 0, y: 0, width: 1440, height: 900),
             styleMask: [.borderless, .nonactivatingPanel],
             backing: .buffered,
@@ -55,18 +56,26 @@ final class LockBlurPanelController {
             // Above the middle: the dialog itself comes up in the centre of the screen.
             message.centerYAnchor.constraint(equalTo: blur.centerYAnchor, constant: -240),
         ])
+        return panel
     }
 
-    /// Covers every screen the panel can reach. One panel on all Spaces is enough for the main display, which is
-    /// where the dialog appears.
+    /// Covers every display, since the gamma this replaces came back on all of them.
     func show() {
-        guard let screen = NSScreen.main else { return }
-        panel.setFrame(screen.frame, display: true)
-        panel.orderFrontRegardless()
+        let screens = NSScreen.screens
+        while panels.count < screens.count {
+            panels.append(Self.makePanel())
+        }
+        for (panel, screen) in zip(panels, screens) {
+            panel.setFrame(screen.frame, display: true)
+            panel.orderFrontRegardless()
+        }
+        for panel in panels.dropFirst(screens.count) {
+            panel.orderOut(nil)
+        }
     }
 
     func hide() {
-        panel.orderOut(nil)
+        panels.forEach { $0.orderOut(nil) }
     }
 }
 

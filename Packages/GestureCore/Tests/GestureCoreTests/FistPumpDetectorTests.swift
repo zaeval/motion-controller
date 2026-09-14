@@ -74,12 +74,14 @@ struct FistPumpDetectorTests {
         #expect(pump(&detector, from: 0.85) == 0)
     }
 
-    @Test func aSweepAcrossTheFrameNeverPumps() {
+    /// The wander limit is generous — the user knocks while raising the hand — but a fist carried right across the
+    /// frame is doing something else.
+    @Test func aFistCarriedAcrossTheFrameNeverPumps() {
         var detector = FistPumpDetector()
         _ = feed(&detector, scale: Self.resting, seconds: 0.3, from: 0)
-        // The hand leans in as it lifts and then travels sideways: the travel disqualifies it.
-        #expect(pump(&detector, from: 0.33, anchor: Vec2(0.5, 0.5)) == 0)
-        #expect(pump(&detector, from: 0.6, anchor: Vec2(0.75, 0.5)) == 0)
+        // One push here, the next one half a frame away: too far to be the same gesture.
+        #expect(pump(&detector, from: 0.33, anchor: Vec2(0.3, 0.5)) == 0)
+        #expect(pump(&detector, from: 0.6, anchor: Vec2(0.9, 0.5)) == 0)
     }
 
     @Test func aHandThatGoesMissingStartsOver() {

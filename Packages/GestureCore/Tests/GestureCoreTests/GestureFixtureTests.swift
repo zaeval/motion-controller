@@ -161,7 +161,11 @@ struct GestureFixtureTests {
                 feed(nil, personPresent: false, at: last + Double(step) / 30)
             }
             let label = "\(recording.name): \(commands)"
-            if recording.name.contains("pang") {
+            if recording.name.contains("knock") {
+                // The user's own "knock-knock" takes, which is what play/pause is: each fires it, and nothing else.
+                #expect(!commands.isEmpty, "\(label)")
+                #expect(commands.allSatisfy { $0 == .media(.playPause) }, "\(label)")
+            } else if recording.name.contains("pang") {
                 // These takes are of the palm pump, which the fist replaced on the same day: a palm now opens desktop
                 // mode, where nothing but the sweep is heard, so they rightly command nothing at all. A fist take is
                 // what would guard the gesture itself.
@@ -248,6 +252,10 @@ struct GestureFixtureTests {
                     #expect(changes.last == .idle && !changes.contains(.pointer), "\(label)")
                 } else if recording.name.contains("left-click"), start == .normal {
                     #expect(changes.allSatisfy { $0 == .pointer }, "\(label)")
+                } else if recording.name.contains("knock") {
+                    // A knocking fist held long enough wakes gesture mode from the cursor or from idle; in gesture
+                    // mode, where it means play/pause, it changes nothing.
+                    #expect(changes.allSatisfy { $0 == .normal }, "\(label)")
                 } else if recording.name.contains("pang"), start == .normal {
                     // Holding the palm out before pumping it can open desktop mode, which is why the pump is heard
                     // there too; nothing else may happen.
