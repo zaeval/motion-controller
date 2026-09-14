@@ -66,6 +66,8 @@ final class Pipeline {
     let camera = CameraService()
     @ObservationIgnored private let handSource = HandSource()
     @ObservationIgnored private var analyzer = GestureAnalyzer()
+    /// Lets the last reading stand in for the frames Vision loses the hand in, for everything but the cursor.
+    @ObservationIgnored private var readingHold = ReadingHold()
     @ObservationIgnored private var modeController = ModeController()
     @ObservationIgnored private var pointer = PointerController()
     @ObservationIgnored private let mouse = MouseEventPoster()
@@ -381,6 +383,7 @@ final class Pipeline {
             self.activity = nil
         }
         analyzer.reset()
+        readingHold.reset()
         if isRecording {
             Self.logger.notice("Recording '\(self.recordingLabel, privacy: .public)' discarded: pipeline stopped")
             recordingTask?.cancel()
@@ -862,7 +865,11 @@ final class Pipeline {
         let time = frame.timestamp
         let tracked = Self.hands(in: frame, cursorSide: cursorHandSide, preferring: preferredHand)
         updateCursorHandClaim(tracked, at: time)
-        let reading = analyzer.update(hand: tracked.cursor, at: time)
+        // The analyzer sees every frame as it is, dropouts included: its own detectors need the gaps (a swipe that
+        // blurred out of tracking fires on one). Everything that watches the hand's shape sees the last reading
+        // instead for a moment, because a lost frame is not a hand that left — see `ReadingHold`.
+        let fresh = analyzer.update(hand: tracked.cursor, at: time)
+        let reading = readingHold.update(fresh, at: time)
         latestReading = reading
         refreshAccessibility(at: time)
         // A tracked hand is proof enough that someone is there: a raised hand often hides the face from the camera.
@@ -935,7 +942,9 @@ final class Pipeline {
 
         switch mode {
         case .pointer:
-            let sample = reading.flatMap { reading in
+            // The real reading, not the stand-in: a held button has to be let go of when the hand is gone, and that
+            // clock is `PointerController`'s.
+            let sample = fresh.flatMap { reading in
                 reading.pointer.map {
                     PointerController.Sample(
                         point: $0,
@@ -961,6 +970,7 @@ final class Pipeline {
             let status = PointerStatus(
                 pressed: pointer.isPressed, dragging: pointer.isDragging, scrolling: pointer.isScrolling,
                 zooming: pointer.isZooming,
+                // The stand-in here: whether the cursor is following the hand shouldn't flicker on a lost frame.
                 engaged: reading?.isIndexBent == true
             )
             if status != pointerStatus {

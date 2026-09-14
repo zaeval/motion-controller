@@ -7,11 +7,19 @@ struct GestureFixtureTests {
     /// A swipe-left clip where the hand turned over instead of travelling, so nothing may fire but a switch to the
     /// next desktop would still be a wrong-direction bug.
     static let handTurnedInsteadOfTravelling: Set<String> = ["20260912-021156-swipe-left.json"]
+    /// A clip of a pointing hand that ends with it opening into a palm for a quarter of a second — which is how
+    /// desktop mode is asked for, so it legitimately gets there. It didn't before `ReadingHold`, because the lost
+    /// frames in between broke the palm up into single frames that never counted.
+    static let endsOnAnOpenPalm: Set<String> = ["20260914-234312.json"]
 
+    /// Mirrors `Pipeline`: the analyzer sees every frame as it is, and what watches the hand's shape sees the last
+    /// reading stand in for the frames Vision lost it in (`ReadingHold`).
     static func analyze(_ recording: SwipeFixtureTests.Recording) -> [(frame: PoseFrame, reading: GestureReading?)] {
         var analyzer = GestureAnalyzer()
+        var hold = ReadingHold()
         return recording.frames.map { frame in
-            (frame, analyzer.update(hand: SwipeFixtureTests.trackedHand(in: frame), at: frame.timestamp))
+            let fresh = analyzer.update(hand: SwipeFixtureTests.trackedHand(in: frame), at: frame.timestamp)
+            return (frame, hold.update(fresh, at: frame.timestamp))
         }
     }
 
@@ -134,11 +142,12 @@ struct GestureFixtureTests {
     @Test func recordedGesturesOnlyFireTheActionsTheyMean() throws {
         for recording in try SwipeFixtureTests.recordings(containing: "") {
             var analyzer = GestureAnalyzer()
+            var hold = ReadingHold()
             var evaluator = ActionEvaluator()
             var modes = ModeController(mode: .normal)
             var commands: [GestureAction] = []
             func feed(_ hand: HandFrame?, personPresent: Bool, at time: TimeInterval) {
-                let reading = analyzer.update(hand: hand, at: time)
+                let reading = hold.update(analyzer.update(hand: hand, at: time), at: time)
                 let changed = modes.update(reading, personPresent: personPresent, at: time)
                 guard changed == nil else { return }
                 switch modes.mode {
@@ -252,6 +261,8 @@ struct GestureFixtureTests {
                     #expect(changes.last == .idle && !changes.contains(.pointer), "\(label)")
                 } else if recording.name.contains("left-click"), start == .normal {
                     #expect(changes.allSatisfy { $0 == .pointer }, "\(label)")
+                } else if Self.endsOnAnOpenPalm.contains(recording.name), start == .normal {
+                    #expect(changes.allSatisfy { $0 == .desktop }, "\(label)")
                 } else if recording.name.contains("knock") {
                     // A knocking fist held long enough wakes gesture mode from the cursor or from idle; in gesture
                     // mode, where it means play/pause, it changes nothing.
