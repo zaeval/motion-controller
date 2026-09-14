@@ -99,7 +99,9 @@ final class HandSource: Sendable {
 
         case .handsPlusBody:
             var handRequest = DetectHumanHandPoseRequest()
-            handRequest.maximumHandCount = 4
+            // Two: one operator, two hands. Four cost frame rate for people this app doesn't act on anyway — the
+            // operator lock that would need them is v2.
+            handRequest.maximumHandCount = 2
             let hands = try await handRequest.perform(on: buffer).map {
                 VisionMapping.hand(from: $0, side: nil, aspect: aspect, at: time)
             }

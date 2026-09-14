@@ -18,6 +18,16 @@ enum DesktopSwitcher {
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "Desktop")
     /// Flip this if a swipe moves the wrong way.
     private static let inverted = false
+    /// Events go out in order on one queue, and the gesture takes a moment, so it can't interleave with the next one.
+    private static let queue = DispatchQueue(label: "MotionController.dockSwipe", qos: .userInteractive)
+    /// `MC_SWIPE_INSTANT=1` goes back to firing all three phases at once, which is how iss switches spaces and what
+    /// this did until the user asked for the animation back (2026-09-14).
+    private static let instant = ProcessInfo.processInfo.environment["MC_SWIPE_INSTANT"] != nil
+    /// How many `changed` phases carry the swipe from nothing to all the way over, and how long that takes. A real
+    /// trackpad sends a stream of them as the fingers move; sending one jump with a flick's velocity is what made
+    /// macOS skip the slide.
+    private static let steps = Int(ProcessInfo.processInfo.environment["MC_SWIPE_STEPS"] ?? "") ?? 6
+    private static let duration = (Double(ProcessInfo.processInfo.environment["MC_SWIPE_MS"] ?? "") ?? 130) / 1000
 
     /// Undocumented `CGEventField` numbers the window server reads out of a trackpad's Dock swipe.
     private enum Field {
@@ -39,8 +49,9 @@ enum DesktopSwitcher {
     private static let horizontalMotion: Int64 = 1
     /// Began, changed, ended: a swipe that doesn't run through all three moves nothing.
     private static let phases: [Int64] = [1, 2, 4]
-    /// Enough to finish the swipe as a flick instead of leaving the desktops half-slid.
-    private static let endVelocity = 400.0
+    /// Enough to finish the swipe instead of leaving the desktops half-slid. Lower than the flick this used to
+    /// send, because the gesture now arrives with the progress already at 1: there is nothing left to throw.
+    private static let endVelocity = 150.0
 
     /// Returns false when the events couldn't be built, so the caller can say the feature is unsupported.
     @discardableResult
@@ -49,18 +60,13 @@ enum DesktopSwitcher {
         // is one to the left.
         let rightward = (direction == .next) != inverted
         let before = SpaceInfo.currentSpaceID()
-        for phase in phases {
-            guard let dock = makeDockEvent(phase: phase, rightward: rightward),
-                  let companion = CGEvent(source: nil),
-                  let eventType = CGEventField(rawValue: Field.eventType)
-            else {
-                logger.error("Dock-swipe events are unavailable on this macOS")
-                return false
-            }
-            companion.setIntegerValueField(eventType, value: gestureEvent)
-            dock.post(tap: .cgSessionEventTap)
-            companion.post(tap: .cgSessionEventTap)
+        // One event built up front, so an unsupported macOS is reported to the caller rather than found out on the
+        // queue after the gesture was claimed to have worked.
+        guard makeDockEvent(phase: phases[0], progress: 0, rightward: rightward) != nil else {
+            logger.error("Dock-swipe events are unavailable on this macOS")
+            return false
         }
+        queue.async { post(rightward: rightward) }
         // Whether the desktop actually moved, for the log: a swipe at the end of the row moves nothing, and the
         // window server drops one now and then.
         Task {
@@ -97,7 +103,33 @@ enum DesktopSwitcher {
         logger.notice("After previous: space \(space(), privacy: .public)")
     }
 
-    private static func makeDockEvent(phase: Int64, rightward: Bool) -> CGEvent? {
+    /// Sends one swipe as a trackpad does: began at nothing, a handful of `changed` phases carrying it across, then
+    /// ended. Spread over `duration`, because everything arriving in the same instant is what made the window server
+    /// jump the desktops rather than slide them (the user asked for the animation, 2026-09-14).
+    private static func post(rightward: Bool) {
+        var sequence: [(phase: Int64, progress: Double)] = [(phases[0], 0)]
+        if !instant {
+            for step in 1...max(steps, 1) {
+                sequence.append((phases[1], Double(step) / Double(max(steps, 1))))
+            }
+        }
+        sequence.append((phases[2], 1))
+        let gap = instant ? 0 : duration / Double(sequence.count - 1)
+        for (index, step) in sequence.enumerated() {
+            guard let dock = makeDockEvent(phase: step.phase, progress: step.progress, rightward: rightward),
+                  let companion = CGEvent(source: nil),
+                  let eventType = CGEventField(rawValue: Field.eventType)
+            else { return }
+            companion.setIntegerValueField(eventType, value: gestureEvent)
+            dock.post(tap: .cgSessionEventTap)
+            companion.post(tap: .cgSessionEventTap)
+            if gap > 0, index < sequence.count - 1 {
+                Thread.sleep(forTimeInterval: gap)
+            }
+        }
+    }
+
+    private static func makeDockEvent(phase: Int64, progress: Double, rightward: Bool) -> CGEvent? {
         guard let event = CGEvent(source: nil),
               let eventType = CGEventField(rawValue: Field.eventType),
               let hidType = CGEventField(rawValue: Field.gestureHIDType),
@@ -110,8 +142,11 @@ enum DesktopSwitcher {
         event.setIntegerValueField(eventType, value: dockControlEvent)
         event.setIntegerValueField(hidType, value: dockSwipeGesture)
         event.setIntegerValueField(phaseField, value: phase)
-        // The direction rides in the sign of the smallest float there is, reinterpreted as the flag bits.
-        let nudge = rightward ? Float.leastNonzeroMagnitude : -Float.leastNonzeroMagnitude
+        // How far over the swipe is, as a float reinterpreted into the flag bits; its sign is the direction. iss
+        // sends the smallest float there is and lets the end velocity finish the job, which switches instantly —
+        // growing it phase by phase is what asks for the slide.
+        let amount = Float(max(progress, Double(Float.leastNonzeroMagnitude)))
+        let nudge = rightward ? amount : -amount
         event.setIntegerValueField(flagBits, value: Int64(Int32(bitPattern: nudge.bitPattern)))
         event.setIntegerValueField(motion, value: horizontalMotion)
         event.setDoubleValueField(scrollY, value: 0)
