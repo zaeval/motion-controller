@@ -133,6 +133,24 @@ cd "motion controller" && xcodegen generate && xcodebuild -project MotionControl
 
 빌드된 앱은 `build/DerivedData/Build/Products/Debug/MotionController.app`에 생긴다.
 
+**4. 설치 패키지 (선택)**
+
+```bash
+./Scripts/make-installer.sh
+```
+
+Release로 빌드해서 `dist/MotionController-<버전>.pkg`를 만든다. `/Applications`에 설치하고, 설치 전에
+실행 중인 사본을 종료하며, 설치 화면에 필요한 권한과 첫 실행 안내가 나온다.
+
+**서명은 안 된다.** 이 저장소는 Apple Development 인증서로 서명하고 `Developer ID Installer` 인증서가 없기
+때문이다. 이 Mac에서는 그냥 열리지만, 다른 Mac에서는 Gatekeeper가 막으므로 받는 쪽에서 우클릭 > 열기나
+`xattr -dr com.apple.quarantine <파일>.pkg`가 필요하다. 유료 Apple Developer Program의 Developer ID
+인증서가 생기면 스크립트가 알아서 서명한다 (공증은 별도로 `notarytool`이 필요하다).
+
+설치한 앱과 개발 빌드는 번들 ID가 같아서 설정·등록된 얼굴·얼굴 모델(`~/Library/Application Support/MotionController/`)을
+공유한다. 다만 **손쉬운 사용 권한은 실행 파일 위치가 바뀌면 다시 허용해야 할 수 있다** — 설치 후에는
+`/Applications` 쪽만 실행하는 게 깔끔하다.
+
 ## 실행 — `open`으로만 켤 것
 
 ```bash

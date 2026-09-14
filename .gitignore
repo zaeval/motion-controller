@@ -10,3 +10,6 @@ xcuserdata/
 
 # The face model is downloaded, not committed (see README)
 App/Vision/Models/
+
+# Installer packages built by Scripts/make-installer.sh
+dist/
