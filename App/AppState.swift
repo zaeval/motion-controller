@@ -11,9 +11,11 @@ final class AppState {
     @ObservationIgnored private let calibrationPanel: CalibrationPanelController
     @ObservationIgnored private let enrollmentPanel: FaceEnrollmentPanelController
     @ObservationIgnored private let intruderAlert = IntruderAlertPanelController()
+    @ObservationIgnored private let tutorial: TutorialPanelController
     /// Mirrors the pipeline's calibration state so the menu can offer to cancel it.
     private(set) var isCalibrating = false
     private static let enrollmentOfferedKey = "faceEnrollmentOffered"
+    private static let tutorialShownKey = "tutorialShown"
 
     var isEnabled = true {
         didSet {
@@ -28,9 +30,22 @@ final class AppState {
         }
     }
 
+    /// Menu action, and the first launch.
+    func showTutorial(onClose: (() -> Void)? = nil) {
+        tutorial.show(onClose: onClose)
+    }
+
     /// Menu actions — add a person, or enroll one again — and the first launch without an enrolled face.
     func showEnrollment(replacing face: EnrolledFace? = nil) {
         enrollmentPanel.show(replacing: face)
+    }
+
+    private func offerEnrollmentOnce() {
+        guard pipeline.enrolledFaces.isEmpty, pipeline.faceUnlockAvailable,
+              !UserDefaults.standard.bool(forKey: Self.enrollmentOfferedKey)
+        else { return }
+        UserDefaults.standard.set(true, forKey: Self.enrollmentOfferedKey)
+        showEnrollment()
     }
 
     /// Menu action: ask for the four screen corners, or stop asking.
@@ -53,6 +68,7 @@ final class AppState {
         overlay = OverlayPanelController(pipeline: pipeline)
         calibrationPanel = CalibrationPanelController(pipeline: pipeline)
         enrollmentPanel = FaceEnrollmentPanelController(pipeline: pipeline)
+        tutorial = TutorialPanelController(pipeline: pipeline)
         pipeline.onIntruderPhotos = { [intruderAlert] count, latest in
             intruderAlert.show(count: count, latest: latest)
         }
@@ -65,14 +81,17 @@ final class AppState {
         pipeline.start()
         overlay.show()
 
-        // The first launch without an enrolled face asks for it, once; the menu can ask again later.
+        // The first launch shows the tutorial, then asks for a face if none is enrolled, each once; the menu has both.
         let lockTest = ProcessInfo.processInfo.environment["MC_LOCK_TEST"]
-        if lockTest == nil, pipeline.enrolledFaces.isEmpty, pipeline.faceUnlockAvailable,
-           !UserDefaults.standard.bool(forKey: Self.enrollmentOfferedKey) {
-            UserDefaults.standard.set(true, forKey: Self.enrollmentOfferedKey)
+        if lockTest == nil {
             Task {
                 try? await Task.sleep(for: .seconds(1))
-                self.showEnrollment()
+                if UserDefaults.standard.bool(forKey: Self.tutorialShownKey) {
+                    self.offerEnrollmentOnce()
+                } else {
+                    UserDefaults.standard.set(true, forKey: Self.tutorialShownKey)
+                    self.showTutorial { [weak self] in self?.offerEnrollmentOnce() }
+                }
             }
         }
 

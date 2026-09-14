@@ -153,12 +153,12 @@ struct GestureFixtureTests {
             }
             let label = "\(recording.name): \(commands)"
             if Self.handTurnedInsteadOfTravelling.contains(recording.name) {
-                #expect(!commands.contains { $0 == .desktop(.next) }, "\(label)")
+                #expect(!commands.contains { $0 == .desktop(.previous) }, "\(label)")
             } else if recording.name.contains("swipe-left") {
                 // Recorded before swipes needed a held palm, so they may rightly fire nothing (SwipeFixtureTests).
-                #expect(commands.allSatisfy { $0 == .desktop(.previous) }, "\(label)")
-            } else if recording.name.contains("swipe-right") {
                 #expect(commands.allSatisfy { $0 == .desktop(.next) }, "\(label)")
+            } else if recording.name.contains("swipe-right") {
+                #expect(commands.allSatisfy { $0 == .desktop(.previous) }, "\(label)")
             } else {
                 #expect(commands.isEmpty, "\(label)")
             }

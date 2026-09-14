@@ -63,6 +63,7 @@ private struct MenuContent: View {
             Button("손쉬운 사용 권한 설정 열기…") { appState.pipeline.openAccessibilitySettings() }
         }
         Divider()
+        Button("사용법 보기…") { appState.showTutorial() }
         Button("디버그 프리뷰 열기…") {
             openWindow(id: DebugPreviewView.windowID)
             NSApp.activate()

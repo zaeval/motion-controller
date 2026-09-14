@@ -17,7 +17,8 @@ public struct ActionEvaluator: Sendable {
         /// A completed hold fires once its pose has been gone this long without the hand closing into a fist. The
         /// recorded parks went from palm to fist with at most one frame in between.
         public var releaseGrace: TimeInterval = 0.3
-        /// Swiping switches desktops. The user's call (2026-09-13): toward their right goes to the next one.
+        /// Swiping switches desktops. The user's call (2026-09-14, reversing 2026-09-13): toward their left goes to the
+        /// next one, the way a page follows the hand that pushes it.
         public var swipesSwitchDesktops = true
         /// No pose fires for this long after a swipe; the hand on its way back isn't a command.
         public var poseCooldownAfterSwipe: TimeInterval = 1.0
@@ -63,7 +64,7 @@ public struct ActionEvaluator: Sendable {
         var actions: [GestureAction] = []
         if settings.swipesSwitchDesktops, let swipe, time - lastZoomStep > settings.swipeCooldownAfterZoom {
             lastSwipe = time
-            actions.append(.desktop(swipe == .right ? .next : .previous))
+            actions.append(.desktop(swipe == .left ? .next : .previous))
             // A swipe starts from the same still palm that plays or pauses: the palm that swept wasn't lowered.
             for index in mapped.indices {
                 mapped[index].machine.reset()
