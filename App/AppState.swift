@@ -78,9 +78,10 @@ final class AppState {
         pipeline.onIntruderPhotos = { [intruderAlert] count, latest in
             intruderAlert.show(count: count, latest: latest)
         }
-        // The screen has to be legible for the Touch ID dialog; the desktop behind it does not.
-        pipeline.onUnlockPrompt = { [lockBlur] asking in
-            if asking {
+        // Up for as long as the screen is locked: the desktop behind the Touch ID dialog must not be readable, and
+        // the brightness that dialog brings back fades away slowly afterwards.
+        pipeline.onLockCover = { [lockBlur] locked in
+            if locked {
                 lockBlur.show()
             } else {
                 lockBlur.hide()

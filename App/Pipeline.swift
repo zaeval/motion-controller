@@ -107,8 +107,11 @@ final class Pipeline {
     @ObservationIgnored var onIntruderPhotos: ((Int, URL?) -> Void)?
     /// Called on every mode change, so the app can put up the panel that belongs to a mode.
     @ObservationIgnored var onModeChange: ((InteractionMode) -> Void)?
-    /// The Touch ID / password dialog came up or went away: the blurred cover goes with it.
-    @ObservationIgnored var onUnlockPrompt: ((Bool) -> Void)?
+    /// The screen is locked, or isn't any more: the blurred cover goes up and down with it. Tied to the lock rather
+    /// than to the dialog, because the dialog's brightness fades out over half a second and a cover that left with
+    /// the dialog showed the desktop, fully lit and unblurred, for that whole half second (the user caught it
+    /// cancelling the dialog, 2026-09-14).
+    @ObservationIgnored var onLockCover: ((Bool) -> Void)?
     /// The frame time analysis last ran at, for things that happen between frames.
     @ObservationIgnored private var lastAnalyzedTime: TimeInterval = 0
     /// `MC_LOCK_TEST_NO_FACE`: the self-test lock ignores the owner's face, so what happens to someone else can be
@@ -265,7 +268,6 @@ final class Pipeline {
             self?.endLock("🔓 Touch ID·암호로 잠금 해제", byOwner: true)
         }
         screenLock.onAskingChanged = { [weak self] asking in
-            self?.onUnlockPrompt?(asking)
             self?.screen.showUnlockDialog(asking)
             self?.watchIntruders(asking ? .dialogShown : .dialogClosedStillLocked)
         }
@@ -701,6 +703,7 @@ final class Pipeline {
         guard !systemScreenLocked, screenLock.lock() else { return false }
         isLocked = true
         UserDefaults.standard.set(true, forKey: Self.wasLockedKey)
+        onLockCover?(true)
         faceVerification.reset()
         lastFaceSimilarity = nil
         cancelCalibration()
@@ -721,7 +724,7 @@ final class Pipeline {
         faceUnlockSuspended = false
         isLocked = false
         UserDefaults.standard.set(false, forKey: Self.wasLockedKey)
-        onUnlockPrompt?(false)
+        onLockCover?(false)
         screenLock.unlock()
         _ = screenPresence.unlock(at: lastAnalyzedTime)
         screen.wake()
