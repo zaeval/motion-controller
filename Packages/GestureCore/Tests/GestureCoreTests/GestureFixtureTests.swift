@@ -145,12 +145,9 @@ struct GestureFixtureTests {
                 case .normal:
                     commands += evaluator.update(reading, at: time).filter { !$0.isContinuousStep }
                 case .desktop:
-                    // Mirrors Pipeline: the sweep and the pump are all this mode hears.
-                    commands += evaluator.update(reading, swipe: analyzer.lastSwipe, at: time).filter {
-                        switch $0 {
-                        case .desktop, .media(.playPause): true
-                        default: false
-                        }
+                    // Mirrors Pipeline: the sweep is all this mode hears.
+                    if let swipe = analyzer.lastSwipe {
+                        commands += evaluator.update(nil, swipe: swipe, at: time).filter { !$0.isContinuousStep }
                     }
                 default: break
                 }
@@ -165,8 +162,10 @@ struct GestureFixtureTests {
             }
             let label = "\(recording.name): \(commands)"
             if recording.name.contains("pang") {
-                // The user's own "팡팡" takes: each one plays or pauses exactly once, and nothing else.
-                #expect(commands == [.media(.playPause)], "\(label)")
+                // These takes are of the palm pump, which the fist replaced on the same day: a palm now opens desktop
+                // mode, where nothing but the sweep is heard, so they rightly command nothing at all. A fist take is
+                // what would guard the gesture itself.
+                #expect(commands.isEmpty, "\(label)")
             } else if Self.handTurnedInsteadOfTravelling.contains(recording.name) {
                 #expect(!commands.contains { $0 == .desktop(.next) }, "\(label)")
             } else if recording.name.contains("swipe-left") {
@@ -254,8 +253,9 @@ struct GestureFixtureTests {
                     // there too; nothing else may happen.
                     #expect(changes.allSatisfy { $0 == .desktop }, "\(label)")
                 } else if recording.name.contains("swipe"), start == .normal {
-                    // A palm held out is how desktop mode is entered now, so these may reach it — and nothing else.
-                    #expect(changes.allSatisfy { $0 == .desktop }, "\(label)")
+                    // A palm is how desktop mode is entered now and another gesture's shape is how it hands the hand
+                    // back, so these clips may cross between the two; the cursor and idle are what may not happen.
+                    #expect(changes.allSatisfy { $0 == .desktop || $0 == .normal }, "\(label)")
                 } else {
                     #expect(changes.isEmpty, "\(label)")
                 }

@@ -7,10 +7,11 @@ import Observation
 @Observable
 final class AppState {
     let pipeline: Pipeline
-    @ObservationIgnored private let overlay: OverlayPanelController
+    private let overlay: OverlayPanelController
     @ObservationIgnored private let calibrationPanel: CalibrationPanelController
     @ObservationIgnored private let enrollmentPanel: FaceEnrollmentPanelController
     @ObservationIgnored private let intruderAlert = IntruderAlertPanelController()
+    @ObservationIgnored private let lockBlur = LockBlurPanelController()
     @ObservationIgnored private let tutorial: TutorialPanelController
     @ObservationIgnored private let desktopModePanel: DesktopModePanelController
     /// Follows `pipeline.mode` so the desktop-mode frame is up exactly while that mode is.
@@ -77,14 +78,30 @@ final class AppState {
         pipeline.onIntruderPhotos = { [intruderAlert] count, latest in
             intruderAlert.show(count: count, latest: latest)
         }
+        // The screen has to be legible for the Touch ID dialog; the desktop behind it does not.
+        pipeline.onUnlockPrompt = { [lockBlur] asking in
+            if asking {
+                lockBlur.show()
+            } else {
+                lockBlur.hide()
+            }
+        }
         // The tutorial's last two missions are setup, not gestures: they open these panels.
         tutorial.onEnroll = { [weak self] in self?.showEnrollment() }
         tutorial.onCalibrate = { [weak self] in self?.toggleCalibration() }
-        pipeline.onModeChange = { [desktopModePanel] mode in
+        pipeline.onModeChange = { [weak self, desktopModePanel] mode in
             if mode == .desktop {
                 desktopModePanel.show()
             } else {
                 desktopModePanel.hide()
+            }
+            // Nothing is being recognized in IDLE, so the pill has nothing to say: the user asked (2026-09-14) for
+            // it gone until a fist wakes recognition up.
+            guard let self, isEnabled else { return }
+            if mode == .idle {
+                overlay.hide()
+            } else {
+                overlay.show()
             }
         }
 
@@ -95,6 +112,7 @@ final class AppState {
         }
         pipeline.start()
         overlay.show()
+        pipeline.relockIfInterrupted()
 
         // The first launch shows the tutorial, then asks for a face if none is enrolled, each once; the menu has both.
         let lockTest = ProcessInfo.processInfo.environment["MC_LOCK_TEST"]

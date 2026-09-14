@@ -21,6 +21,8 @@ public enum ModeChangeReason: String, Codable, Sendable {
     case fist
     /// 🖐 held still with the palm to the camera.
     case palmHold
+    /// Desktop mode saw a gesture that isn't the palm: back to gesture mode, where that gesture means something.
+    case otherPose
     /// ✊ pulled back.
     case idleGesture
     /// Pointer mode's hand was gone too long.
@@ -54,6 +56,10 @@ public struct ModeController: Sendable {
         /// 2026-09-14 — waiting 0.6 s for it felt like being kept out of the mode). Three frames and a hair, so a
         /// single mistracked frame in some other gesture can't flip the mode.
         public var palmHold = GestureStateMachine.Timing(candidateFrames: 3, holdSeconds: 0.05, cooldownSeconds: 0.5)
+        /// And the way out: a gesture that isn't the palm sends desktop mode back to gesture mode just as quickly,
+        /// because a palm flashing past on the way to three fingers or a pinch would otherwise leave the user in a
+        /// mode that hears neither (2026-09-14 — "확대축소 작동 안한다").
+        public var otherPose = GestureStateMachine.Timing(candidateFrames: 3, holdSeconds: 0.05, cooldownSeconds: 0.3)
         /// The second of two taps must complete within this long of the first.
         public var doubleTapWindow: TimeInterval = 0.7
         /// Pointer mode falls back to gesture mode once its hand has been gone this long.
@@ -70,6 +76,7 @@ public struct ModeController: Sendable {
         didSet {
             fist.timing = settings.fist
             palm.timing = settings.palmHold
+            other.timing = settings.otherPose
         }
     }
 
@@ -78,6 +85,8 @@ public struct ModeController: Sendable {
     public private(set) var lastChangeReason: ModeChangeReason?
     private var fist: GestureStateMachine
     private var palm: GestureStateMachine
+    /// Desktop mode's way back to gesture mode when the hand makes some other gesture's shape.
+    private var other: GestureStateMachine
     private var firstTap: TimeInterval?
     private var handLostSince: TimeInterval?
     /// Only a hand seen in pointer mode can time it out, so switching on from the menu leaves time to raise one.
@@ -93,6 +102,7 @@ public struct ModeController: Sendable {
         self.mode = mode
         fist = GestureStateMachine(timing: settings.fist)
         palm = GestureStateMachine(timing: settings.palmHold)
+        other = GestureStateMachine(timing: settings.otherPose)
     }
 
     /// One tap has landed and a second would switch to pointer mode.
@@ -152,6 +162,13 @@ public struct ModeController: Sendable {
         let palming = mode == .normal && reading.pose == .openPalm && !reading.isFist
         if palm.update(detected: palming, handStill: reading.isStill, at: time) {
             return change(to: .desktop, because: .palmHold)
+        }
+        // Zoom and the volume/brightness pinch live in gesture mode, so desktop mode hands the hand back as soon as
+        // it makes one of their shapes. The fist below is still the deliberate way out.
+        let elsewhere: Set<StaticPose> = [.threeFingers, .victory, .pointIndex, .pinch]
+        let leaving = mode == .desktop && !reading.isFist && (reading.isPinching || reading.pose.map(elsewhere.contains) == true)
+        if other.update(detected: leaving, handStill: true, at: time) {
+            return change(to: .normal, because: .otherPose)
         }
         let fisting = mode != .normal && reading.isFist && !parkingFistHeld && !holdingButton
         guard fist.update(detected: fisting, handStill: true, at: time) else { return nil }

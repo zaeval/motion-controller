@@ -33,7 +33,8 @@ extension ModeChangeReason {
         switch self {
         case .doubleTap: "톡톡"
         case .fist: "주먹"
-        case .palmHold: "손바닥 유지"
+        case .palmHold: "손바닥"
+        case .otherPose: "다른 제스처"
         case .idleGesture: "주먹 뒤로"
         case .handLost: "손이 3초 안 보임"
         case .absence: "사람 없음"

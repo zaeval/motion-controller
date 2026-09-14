@@ -1,22 +1,23 @@
 import Foundation
 
-/// 🖐 pushed toward the camera and back, twice, quickly — the user's "팡팡" (2026-09-14). It plays and pauses.
+/// ✊ pushed toward the camera and back, twice, quickly — the user's "팡팡" (2026-09-14). It plays and pauses.
 ///
-/// Holding the palm out used to do it, and that is the same thing a swipe starts from: the user had to wait with
-/// their hand still, which is exactly the swipe's arming pose, and the wait now opens desktop mode instead. A pump
-/// has no still pose to collide with.
+/// It was a palm being pumped until the same day: showing a palm is how desktop mode is asked for now, so the palm
+/// was doing two jobs and the pump lost. A fist has nothing else to do in gesture mode (the fist that opens gesture
+/// mode is only read outside it).
 ///
 /// What it watches is the hand's apparent size, since a hand moving toward the camera grows. That measure is noisy —
 /// the wrist-to-knuckle distance jumps about a third between frames in fast motion — so a peak has to hold for
 /// `peakFrames` in a row, and the baseline is the smallest hand seen recently rather than any single frame.
 ///
-/// Two things it must never be. A park is ✊ pulled back, whose second half is a hand shrinking, so a pump only
-/// counts when the hand goes *out* first and comes back while still an open palm; closing it cancels. And a swipe
-/// travels sideways, sometimes leaning in as it lifts, so the palm has to stay within `stillRadius` of where it
-/// started throughout.
+/// Two things it must never be. A park is ✊ pulled back, which is a fist shrinking — the same shape, the other way
+/// round — so `IdleGestureDetector` waits for the pulled-back fist to *stay* back before parking, and a pump pushes
+/// out first. Opening the hand cancels. And a swipe travels sideways, so the hand has to stay within `stillRadius`
+/// of where it started throughout.
 ///
-/// Measured against the user's own three "palm-pang-pang" recordings (2026-09-14), which the first, reasoned version
-/// of this never fired on:
+/// Measured against the user's own three "palm-pang-pang" recordings (2026-09-14) — of the palm version of the
+/// gesture, so the numbers came from a palm and the shape has since changed to a fist. They are all relative to the
+/// hand's own size, so they should carry over; a fist recording would settle it.
 /// - **It fires on the second push out, not on a second return.** Their hand goes out, back, out — and then stays
 ///   out. Waiting for the second return meant waiting for something they don't do.
 /// - Pushes measure +0.19…+0.40 over the rolling baseline, so the rise mark sits at 0.15, and the two pushes are
@@ -27,7 +28,7 @@ import Foundation
 ///   the way down from the peak" sees it in every take.
 /// - A frame or two in the middle doesn't read as an open palm even with the palm held flat at the camera, so
 ///   `poseGrace` skips those frames instead of throwing the pumps away.
-public struct PalmPumpDetector: Sendable {
+public struct FistPumpDetector: Sendable {
     public struct Settings: Codable, Equatable, Sendable {
         /// How much bigger than the baseline the hand has to get to count as pushed out.
         public var riseFraction = 0.15
@@ -44,7 +45,7 @@ public struct PalmPumpDetector: Sendable {
         public var baselineWindow: TimeInterval = 1.5
         /// Nothing fires again this soon.
         public var cooldown: TimeInterval = 1.0
-        /// Frames that don't read as an open palm are skipped for this long before the pumps are thrown away.
+        /// Frames that don't read as a fist are skipped for this long before the pumps are thrown away.
         public var poseGrace: TimeInterval = 0.3
 
         public init() {}
@@ -55,15 +56,16 @@ public struct PalmPumpDetector: Sendable {
         public var handScale: Double
         /// Palm anchor in image-height units.
         public var anchor: Vec2
-        /// The pose is an open palm facing the camera.
-        public var openPalm: Bool
+        /// The hand is closed into a fist.
         public var fist: Bool
+        /// The hand is open: the cancel.
+        public var openHand: Bool
 
-        public init(handScale: Double, anchor: Vec2, openPalm: Bool, fist: Bool = false) {
+        public init(handScale: Double, anchor: Vec2, fist: Bool, openHand: Bool = false) {
             self.handScale = handScale
             self.anchor = anchor
-            self.openPalm = openPalm
             self.fist = fist
+            self.openHand = openHand
         }
     }
 
@@ -78,8 +80,8 @@ public struct PalmPumpDetector: Sendable {
     /// Pushed out and waiting to come back: the biggest hand of this push, and the baseline it rose from.
     private var out: (peak: Double, base: Double)?
     private var lastFire = -TimeInterval.infinity
-    /// The last frame that read as an open palm, for `poseGrace`.
-    private var lastPalm: TimeInterval?
+    /// The last frame that read as a fist, for `poseGrace`.
+    private var lastFist: TimeInterval?
 
     public init(settings: Settings = Settings()) {
         self.settings = settings
@@ -90,19 +92,18 @@ public struct PalmPumpDetector: Sendable {
 
     /// Feeds one frame (nil when no hand was seen). True on the frame the second push out lands.
     public mutating func update(_ sample: Sample?, at time: TimeInterval) -> Bool {
-        guard let sample, !sample.fist else {
-            // Closing the hand is the cancel, and a hand that went missing was doing something else.
+        guard let sample, !sample.openHand else {
+            // Opening the hand is the cancel, and a hand that went missing was doing something else.
             reset()
             return false
         }
-        guard sample.openPalm else {
-            // The user's flat palm drops out of the open-palm pose for a frame here and there (a quarter of the
-            // frames of their own recordings, before the openness mark was lowered), so a short gap is skipped
-            // rather than counted against them.
-            if let lastPalm, time - lastPalm > settings.poseGrace { reset() }
+        guard sample.fist else {
+            // A hand mid-pump drops out of the fist pose for a frame here and there, so a short gap is skipped
+            // rather than counted against the user.
+            if let lastFist, time - lastFist > settings.poseGrace { reset() }
             return false
         }
-        lastPalm = time
+        lastFist = time
         recent.append((time, sample.handScale))
         recent.removeAll { time - $0.time > settings.baselineWindow }
         guard let baseline = recent.map(\.scale).min(), baseline > 0 else { return false }
@@ -152,6 +153,6 @@ public struct PalmPumpDetector: Sendable {
         pumps = 0
         peakRun = 0
         out = nil
-        lastPalm = nil
+        lastFist = nil
     }
 }

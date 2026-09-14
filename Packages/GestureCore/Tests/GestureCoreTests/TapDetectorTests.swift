@@ -122,13 +122,24 @@ struct IdleGestureDetectorTests {
         [(Shape, Double)?](repeating: (shape, size), count: count)
     }
 
+    /// The pulled-back fist has to *stay* back: `shrinkSeconds`, so that a fist pushed toward the camera and pulled
+    /// back — the play/pause pump — isn't a park (2026-09-14). Eight frames at 30 fps.
     @Test func aFistPulledBackParksWithOrWithoutAPalmFirst() {
         var afterPalm = IdleGestureDetector()
-        let frames = repeated(.open, 0.28, 10) + [(.fist, 0.25)] + repeated(.fist, 0.21, 10) + [(.fist, 0.19), (.fist, 0.16), (.fist, 0.16)]
-        #expect(feed(&afterPalm, frames) == [23])
+        let frames = repeated(.open, 0.28, 10) + [(.fist, 0.25)] + repeated(.fist, 0.21, 10) + [(.fist, 0.19)]
+            + repeated(.fist, 0.16, 12)
+        #expect(feed(&afterPalm, frames) == [30])
         // The user dropped the palm (2026-09-14): a hand that shows up already a fist parks too.
         var fistOnly = IdleGestureDetector()
-        #expect(feed(&fistOnly, repeated(.fist, 0.21, 10) + [(.fist, 0.16), (.fist, 0.16)]) == [11])
+        #expect(feed(&fistOnly, repeated(.fist, 0.21, 10) + repeated(.fist, 0.16, 12)) == [18])
+    }
+
+    /// A fist that comes back out again is the play/pause pump, not a park.
+    @Test func aFistThatComesStraightBackOutDoesNotPark() {
+        var detector = IdleGestureDetector()
+        let pumping = repeated(.fist, 0.21, 10) + repeated(.fist, 0.16, 4) + repeated(.fist, 0.26, 4)
+            + repeated(.fist, 0.16, 4) + repeated(.fist, 0.26, 4)
+        #expect(feed(&detector, pumping).isEmpty)
     }
 
     @Test func aFistShrinkingAtOnceOrOneSmallFrameDoesNotPark() {
@@ -145,17 +156,17 @@ struct IdleGestureDetectorTests {
 
     @Test func aFistHeldTooLongMustOpenBeforeItCanPark() {
         var detector = IdleGestureDetector()
-        let tooLate = repeated(.fist, 0.21, 60) + [(.fist, 0.15), (.fist, 0.15)]
-        let afresh = [(.open, 0.28)] + repeated(.fist, 0.21, 8) + [(.fist, 0.15), (.fist, 0.15)]
-        #expect(feed(&detector, tooLate + afresh) == [72])
+        let tooLate = repeated(.fist, 0.21, 60) + repeated(.fist, 0.15, 9)
+        let afresh = [(.open, 0.28)] + repeated(.fist, 0.21, 8) + repeated(.fist, 0.15, 9)
+        #expect(feed(&detector, tooLate + afresh) == [86])
     }
 
     @Test func aMisreadFrameOrABriefDropoutKeepsTheGestureButOpeningAbandonsIt() {
         // One recorded park read as something else for a frame on the way back.
         var misread = IdleGestureDetector()
-        #expect(feed(&misread, repeated(.fist, 0.21, 8) + [(.open, 0.28), (.fist, 0.15), (.fist, 0.15)]) == [10])
+        #expect(feed(&misread, repeated(.fist, 0.21, 8) + [(.open, 0.28)] + repeated(.fist, 0.15, 10)) == [17])
         var dropped = IdleGestureDetector()
-        #expect(feed(&dropped, repeated(.fist, 0.21, 8) + [nil, nil, (.fist, 0.15), (.fist, 0.15)]) == [11])
+        #expect(feed(&dropped, repeated(.fist, 0.21, 8) + [nil, nil] + repeated(.fist, 0.15, 10)) == [18])
         var reopened = IdleGestureDetector()
         #expect(feed(&reopened, repeated(.fist, 0.21, 8) + repeated(.open, 0.28, 8) + [(.fist, 0.15), (.fist, 0.15)]).isEmpty)
     }

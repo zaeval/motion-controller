@@ -15,7 +15,7 @@ struct ActionEvaluatorTests {
             pinchTotals: [:], palmSpeed: still ? 0 : 2, isSweeping: !still, isStill: still, inActiveRegion: true,
             openness: nil, palmFacesCamera: true, extendedFingers: [], steps: steps, zoomStep: zoomStep,
             pointer: Vec2(0.5, 0.5), handScale: 0.15, imageAspect: 16.0 / 9, isFist: pose == .fist, tap: nil,
-            isTapDipping: false, idleGesture: false, palmPump: pump, isIndexBent: false, indexReachAlongPalm: nil,
+            isTapDipping: false, idleGesture: false, fistPump: pump, isIndexBent: false, indexReachAlongPalm: nil,
             straightIndexReach: nil
         )
     }
@@ -33,7 +33,7 @@ struct ActionEvaluatorTests {
 
     @Test func pumpingThePalmPlaysOrPauses() {
         var evaluator = ActionEvaluator()
-        // 🖐 pushed out and back twice; `PalmPumpDetector` is what decides that, and this is what it means.
+        // 🖐 pushed out and back twice; `FistPumpDetector` is what decides that, and this is what it means.
         #expect(evaluator.update(reading(.openPalm, pump: true, at: 0), at: 0) == [.media(.playPause)])
         // Holding the palm out does nothing here any more: that opens desktop mode, which is `ModeController`'s.
         #expect(feed(&evaluator, from: 0.1, seconds: 3.0) { reading(.openPalm, at: $0) }.isEmpty)
@@ -52,7 +52,7 @@ struct ActionEvaluatorTests {
     }
 
     /// The user's own park held the palm past the old hold before folding it (logged 2026-09-14). Nothing about a
-    /// park may reach the media keys; that it can't pump is `PalmPumpDetectorTests.aParkNeverPumps`.
+    /// park may reach the media keys; that it can't pump is `FistPumpDetectorTests.aParkNeverPumps`.
     @Test func aParkingGestureFiresNothing() {
         var evaluator = ActionEvaluator()
         #expect(feed(&evaluator, from: 0, seconds: 1.6) { reading(.openPalm, at: $0) }.isEmpty)

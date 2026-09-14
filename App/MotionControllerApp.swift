@@ -36,11 +36,12 @@ private struct MenuContent: View {
             .disabled(!appState.isEnabled)
         Button("커서 영역 기본값으로") { appState.pipeline.clearCalibration() }
         Divider()
-        Toggle("까만 화면 잠금 (얼굴·Touch ID로 해제)", isOn: Binding(
+        // On without an enrolled face too: Touch ID or the password is the way in, and a face only adds one that
+        // needs no touching.
+        Toggle("까만 화면 잠금 (Touch ID·얼굴로 해제)", isOn: Binding(
             get: { appState.pipeline.lockEnabled },
             set: { appState.pipeline.lockEnabled = $0 }
         ))
-        .disabled(appState.pipeline.enrolledFaces.isEmpty)
         // Not disabled without the model any more: the panel offers to install it.
         Button(appState.pipeline.enrolledFaces.isEmpty ? "얼굴 등록…" : "얼굴 추가…") { appState.showEnrollment() }
             .disabled(!appState.isEnabled)

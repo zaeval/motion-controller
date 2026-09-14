@@ -74,9 +74,11 @@ struct RecordingTraces {
     func printPalmGates() throws {
         let marks = [0.29, 0.25, 0.20, 0.16]
         var totals = [Double: Int](), all4 = 0, unknownFlag = 0, noFacing = 0
+        var allThumbOut = 0, allThumbIn = 0, allThumbUnknown = 0
         var everyOpenness: [Double] = []
         for recording in try SwipeFixtureTests.recordings(containing: ProcessInfo.processInfo.environment["PALM_LABEL"] ?? "") {
             var hands = 0, extendedAll = 0, unknown = 0, facingless = 0
+            var thumbOut = 0, thumbIn = 0, thumbUnknown = 0
             var openness: [Double] = []
             var passes = [Double: Int]()
             for frame in recording.frames {
@@ -88,6 +90,11 @@ struct RecordingTraces {
                 extendedAll += 1
                 all4 += 1
                 if features.palmFacesCamera == nil { facingless += 1; noFacing += 1 }
+                switch features.isThumbExtended {
+                case true?: thumbOut += 1; allThumbOut += 1
+                case false?: thumbIn += 1; allThumbIn += 1
+                default: thumbUnknown += 1; allThumbUnknown += 1
+                }
                 guard let value = features.openness else { continue }
                 openness.append(value)
                 everyOpenness.append(value)
@@ -97,6 +104,7 @@ struct RecordingTraces {
                 }
             }
             guard extendedAll > 0 else { continue }
+            print(String(format: "   thumb out %3d in %3d unknown %3d", thumbOut, thumbIn, thumbUnknown))
             let sorted = openness.sorted()
             print(String(
                 format: "%@ hands %3d all4 %3d (unknown %2d, no facing %2d) openness %.2f/%.2f/%.2f  %@",
@@ -111,6 +119,7 @@ struct RecordingTraces {
             format: "ALL: all-four-extended frames %d (a finger unknown on %d, no facing on %d) openness %.2f…%.2f median %.2f",
             all4, unknownFlag, noFacing, sorted.first ?? 0, sorted.last ?? 0, sorted[max(sorted.count / 2, 0)]
         ))
+        print("ALL: thumb out \(allThumbOut) in \(allThumbIn) unknown \(allThumbUnknown) of the all-four-extended frames")
         for mark in marks {
             print(String(format: "  ≥%.2f keeps %d of %d (%.0f%%)", mark, totals[mark] ?? 0, all4,
                          Double(totals[mark] ?? 0) / Double(max(all4, 1)) * 100))
@@ -118,12 +127,12 @@ struct RecordingTraces {
     }
 
     /// `PUMP_TRACE=pang swift test --filter RecordingTraces` prints every frame of the "팡팡" recordings: the hand's
-    /// apparent size against the rolling baseline `PalmPumpDetector` uses, the pose it was classified as, how far the
+    /// apparent size against the rolling baseline `FistPumpDetector` uses, the pose it was classified as, how far the
     /// palm has drifted from where it started, and the frames the shipped settings fire on.
     @Test(.enabled(if: ProcessInfo.processInfo.environment["PUMP_TRACE"] != nil))
     func printPumpTrace() throws {
         let label = ProcessInfo.processInfo.environment["PUMP_TRACE"] ?? "pang"
-        let settings = PalmPumpDetector.Settings()
+        let settings = FistPumpDetector.Settings()
         for recording in try SwipeFixtureTests.recordings(containing: label == "1" ? "pang" : label) {
             print("── \(recording.name)")
             var analyzer = GestureAnalyzer()
@@ -143,7 +152,7 @@ struct RecordingTraces {
                 recent.removeAll { frame.timestamp - $0.time > settings.baselineWindow }
                 let baseline = recent.map(\.scale).min() ?? features.scale
                 if firstAnchor == nil, reading.pose == .openPalm { firstAnchor = anchor }
-                if reading.palmPump { fires.append(time) }
+                if reading.fistPump { fires.append(time) }
                 // Which gate a frame that isn't an open palm failed: the extended flags per finger, how far the
                 // tips stand off the palm, and whether the palm's facing could be worked out at all.
                 let extended = Finger.allCases.map { finger -> String in
@@ -163,7 +172,7 @@ struct RecordingTraces {
                     features.palmFacesCamera.map { $0 ? "cam" : "back" } ?? " ? ",
                     reading.pose == .openPalm ? "palm" : String(describing: reading.pose),
                     reading.isFist ? " fist" : "",
-                    reading.palmPump ? "  ⏯ FIRE" : ""
+                    reading.fistPump ? "  ⏯ FIRE" : ""
                 ))
             }
             let scales = recording.frames.compactMap { frame -> Double? in

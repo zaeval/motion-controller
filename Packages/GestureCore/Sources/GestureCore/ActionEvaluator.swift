@@ -6,7 +6,7 @@ import Foundation
 ///
 /// Play/pause was a held open palm, through two attempts at making that safe: it fired on a parking gesture's palm,
 /// and holding it still is what a swipe starts from. The user's call (2026-09-14) retired the hold — 🖐 pushed toward
-/// the camera and back twice does it now (`PalmPumpDetector`), and holding the palm opens desktop mode instead. No
+/// the camera and back twice does it now (`FistPumpDetector`), and holding the palm opens desktop mode instead. No
 /// static pose is mapped to anything as a result, so the hold machinery below is what a mapping editor (plan M5)
 /// will hang off. For a moment after a swipe nothing fires at all: swiping rotates the hand, and the hand coming
 /// back read as a held pose.
@@ -62,7 +62,7 @@ public struct ActionEvaluator: Sendable {
     ) -> [GestureAction] {
         var actions: [GestureAction] = []
         // 🖐 pushed out and back twice. Never right after a swipe: a hand coming back from a sweep leans in and out.
-        if let reading, reading.palmPump, time - lastSwipe > settings.poseCooldownAfterSwipe {
+        if let reading, reading.fistPump, time - lastSwipe > settings.poseCooldownAfterSwipe {
             actions.append(.media(.playPause))
         }
         if settings.swipesSwitchDesktops, let swipe, time - lastZoomStep > settings.swipeCooldownAfterZoom {

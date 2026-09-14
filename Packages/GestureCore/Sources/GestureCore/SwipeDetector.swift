@@ -21,8 +21,13 @@ public enum SwipeDirection: String, Codable, Sendable {
 ///   `stillRadius` for `armSeconds`. Folding into a fist or a pinch before moving off disarms.
 /// - Fired: from armed, the palm gets `strokeTravel` sideways from where it stood, more sideways than up or down,
 ///   within `strokeWindow` of starting to move. A stroke that blurs out of tracking fires if it had got `exitTravel`.
-/// - Afterwards only another hold arms it, and the opposite way stays off for `oppositeSuppression`, so pausing at
-///   the end of a stroke doesn't make the way back a swipe.
+/// - Afterwards, for `repeatWindow`, the next sweep starts from wherever the hand turns around instead of from
+///   another standstill: the user (2026-09-14) found waiting between sweeps the hardest part, and a sweep is only
+///   ever heard in desktop mode, which they asked for by showing the palm in the first place.
+/// - The hand coming back from a sweep ends up about where that sweep started, so a sweep the other way that ends
+///   within `returnTolerance` of the last one's origin is the return and fires nothing. A deliberate sweep the other
+///   way carries on past that point, which is what tells the two apart — a timer can't, because a return can come
+///   1.4 s later or straight away.
 public struct SwipeDetector: Sendable {
     public struct Settings: Codable, Equatable, Sendable {
         /// How long the palm stands still before a sweep is measured from where it stood. Short on purpose: the
@@ -45,10 +50,16 @@ public struct SwipeDetector: Sendable {
         public var maxRise = 0.2
         /// Tracking gaps up to this long don't break a hold or a stroke. A fast stroke blurs out for a few frames.
         public var dropoutTolerance: TimeInterval = 0.3
-        /// No swipe the other way this soon after one. Longer than the arming hold by a lot, because that hold is
-        /// now short enough for a hand pausing at the end of a stroke to re-arm before it comes back: logged return
-        /// strokes arrived 1.4–1.6 s after the stroke they were returning from.
-        public var oppositeSuppression: TimeInterval = 1.6
+        /// How long after a swipe the next one may start from a turning point rather than a standstill.
+        public var repeatWindow: TimeInterval = 3.0
+        /// How far back from the far end of a sweep the hand has to come before that end counts as a turning point,
+        /// in image heights.
+        public var reversalTravel = 0.02
+        /// A sweep the other way that ends this close to where the last one started is the hand coming back rather
+        /// than a sweep, in image heights. A stroke itself travels about 0.23 of those, so the two don't overlap.
+        public var returnTolerance = 0.1
+        /// A debounce on the other direction, nothing more: `returnTolerance` is what tells a return from a sweep.
+        public var oppositeSuppression: TimeInterval = 0.3
         public var invert = false
 
         public init() {}
@@ -89,11 +100,20 @@ public struct SwipeDetector: Sendable {
         var movedAt: TimeInterval?
     }
 
+    /// Which way the hand is travelling and how far it has got, so the point it turns around at can arm the next
+    /// sweep without a standstill.
+    private struct Turn: Sendable {
+        var extreme: Vec2
+        /// +1 when image x is growing, -1 when it is shrinking.
+        var direction: Double
+    }
+
     public var settings: Settings
     private var recent: [(time: TimeInterval, anchor: Vec2, canArm: Bool)] = []
     private var hold: Hold?
     private var lastSeen: (time: TimeInterval, anchor: Vec2, aspect: Double)?
-    private var lastFire: (direction: SwipeDirection, time: TimeInterval)?
+    private var turn: Turn?
+    private var lastFire: (direction: SwipeDirection, time: TimeInterval, origin: Vec2)?
 
     public init(settings: Settings = Settings()) {
         self.settings = settings
@@ -116,12 +136,14 @@ public struct SwipeDetector: Sendable {
             hold = nil
             guard let direction = stroke(from: armed.anchor, to: seen.anchor, aspect: seen.aspect, travel: settings.exitTravel)
             else { return nil }
-            return fire(direction, at: time)
+            return fire(direction, from: armed.anchor, to: seen.anchor, at: time)
         }
         if gap > settings.dropoutTolerance {
             recent.removeAll()
             hold = nil
+            turn = nil
         }
+        let previousAnchor = lastSeen?.anchor
         lastSeen = (time, sample.anchor, sample.imageAspect)
         recent.append((time, sample.anchor, sample.canArm))
         // A frame's worth of slack either way, so frame times that don't add up exactly can't flicker the hold.
@@ -136,7 +158,15 @@ public struct SwipeDetector: Sendable {
         if let center = stillCenter(at: time) {
             // The middle of the hold rather than the latest frame, which is already on its way at the start of a stroke.
             hold = Hold(anchor: center)
+            turn = nil
             return nil
+        }
+        // Sweeping again doesn't mean standing still again: within `repeatWindow` of a swipe, the far end of each
+        // movement arms the next one.
+        if let last = lastFire, time - last.time <= settings.repeatWindow, sample.canArm {
+            armFromTurn(sample.anchor, previous: previousAnchor)
+        } else {
+            turn = nil
         }
         guard var current = hold else { return nil }
         // Still where it stood, only not looking right for a frame or two: not moving off yet.
@@ -154,16 +184,37 @@ public struct SwipeDetector: Sendable {
             from: current.anchor, to: sample.anchor, aspect: sample.imageAspect, travel: settings.strokeTravel
         ) else { return nil }
         hold = nil
-        // Only a hold that starts after this swipe arms the next one.
         recent.removeAll()
-        return fire(direction, at: time)
+        return fire(direction, from: current.anchor, to: sample.anchor, at: time)
     }
 
     public mutating func reset() {
         recent.removeAll()
         hold = nil
         lastSeen = nil
+        turn = nil
         lastFire = nil
+    }
+
+    /// Follows which way the hand is going, and arms at the far end the moment it comes back from it.
+    private mutating func armFromTurn(_ anchor: Vec2, previous: Vec2?) {
+        guard var current = turn else {
+            guard let previous, previous.x != anchor.x else { return }
+            turn = Turn(extreme: anchor, direction: anchor.x > previous.x ? 1 : -1)
+            return
+        }
+        let travelled = (anchor.x - current.extreme.x) * current.direction
+        if travelled > 0 {
+            current.extreme = anchor
+            turn = current
+            return
+        }
+        guard -travelled >= settings.reversalTravel else {
+            turn = current
+            return
+        }
+        hold = Hold(anchor: current.extreme)
+        turn = Turn(extreme: anchor, direction: -current.direction)
     }
 
     /// Where the palm has been holding still: every frame of the last `armSeconds` looked right and stayed close
@@ -188,11 +239,17 @@ public struct SwipeDetector: Sendable {
         return left != settings.invert ? .left : .right
     }
 
-    private mutating func fire(_ direction: SwipeDirection, at time: TimeInterval) -> SwipeDirection? {
-        if let lastFire, direction != lastFire.direction, time - lastFire.time < settings.oppositeSuppression {
-            return nil
+    private mutating func fire(
+        _ direction: SwipeDirection, from origin: Vec2, to end: Vec2, at time: TimeInterval
+    ) -> SwipeDirection? {
+        if let lastFire, direction != lastFire.direction {
+            if time - lastFire.time < settings.oppositeSuppression { return nil }
+            // The hand coming back from the last sweep: it ends up about where that sweep started, while a sweep
+            // meant the other way carries on past it. `lastFire` is left alone so the sweep after this one still
+            // measures itself against the real one.
+            if abs(end.x - lastFire.origin.x) <= settings.returnTolerance { return nil }
         }
-        lastFire = (direction, time)
+        lastFire = (direction, time, origin)
         return direction
     }
 }

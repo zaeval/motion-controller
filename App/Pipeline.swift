@@ -83,6 +83,9 @@ final class Pipeline {
     /// MC_LIGHT_TEST=dark holds the app in the too-dark state from launch, so the hold can be checked without
     /// turning the lights off.
     @ObservationIgnored private let forcedDark = ProcessInfo.processInfo.environment["MC_LIGHT_TEST"] == "dark"
+    /// Set while the screen is locked and cleared when it is let go, so a kill or a crash while locked comes back
+    /// locked instead of handing the Mac over.
+    private static let wasLockedKey = "screenWasLocked"
     /// Holds input back while the dark screen is locked, and asks for Touch ID or the password.
     @ObservationIgnored private let screenLock = ScreenLock()
     @ObservationIgnored private let faceSource = FaceSource()
@@ -104,6 +107,8 @@ final class Pipeline {
     @ObservationIgnored var onIntruderPhotos: ((Int, URL?) -> Void)?
     /// Called on every mode change, so the app can put up the panel that belongs to a mode.
     @ObservationIgnored var onModeChange: ((InteractionMode) -> Void)?
+    /// The Touch ID / password dialog came up or went away: the blurred cover goes with it.
+    @ObservationIgnored var onUnlockPrompt: ((Bool) -> Void)?
     /// The frame time analysis last ran at, for things that happen between frames.
     @ObservationIgnored private var lastAnalyzedTime: TimeInterval = 0
     /// `MC_LOCK_TEST_NO_FACE`: the self-test lock ignores the owner's face, so what happens to someone else can be
@@ -249,6 +254,7 @@ final class Pipeline {
             self?.endLock("🔓 Touch ID·암호로 잠금 해제", byOwner: true)
         }
         screenLock.onAskingChanged = { [weak self] asking in
+            self?.onUnlockPrompt?(asking)
             self?.screen.showUnlockDialog(asking)
             self?.watchIntruders(asking ? .dialogShown : .dialogClosedStillLocked)
         }
@@ -293,6 +299,20 @@ final class Pipeline {
                 MainActor.assumeIsolated { self?.systemLockChanged(locked) }
             })
         }
+    }
+
+    /// Locks again at launch when the last run ended while locked — killed, crashed, or quit — so that isn't a way
+    /// in. Skipped when nothing can authenticate, which would stand someone in front of a screen they can't clear.
+    func relockIfInterrupted() {
+        guard UserDefaults.standard.bool(forKey: Self.wasLockedKey), lockEnabled else { return }
+        guard ScreenLock.canAuthenticate, AccessibilityPermission.isTrusted, engageLock() else {
+            UserDefaults.standard.set(false, forKey: Self.wasLockedKey)
+            Self.logger.notice("Last run ended locked, but locking isn't possible now: letting it go")
+            return
+        }
+        screen.dim(wakesOnInput: false)
+        logMotion("🔒 잠긴 채로 종료됨 · 다시 잠금")
+        Self.logger.notice("Last run ended locked: locked again")
     }
 
     var frameAspect: Double { latestFrame?.imageAspect ?? 16.0 / 9.0 }
@@ -668,6 +688,7 @@ final class Pipeline {
         guard !isLocked else { return true }
         guard !systemScreenLocked, screenLock.lock() else { return false }
         isLocked = true
+        UserDefaults.standard.set(true, forKey: Self.wasLockedKey)
         faceVerification.reset()
         lastFaceSimilarity = nil
         cancelCalibration()
@@ -687,6 +708,8 @@ final class Pipeline {
         watchIntruders(.unlocked(byOwner: byOwner))
         faceUnlockSuspended = false
         isLocked = false
+        UserDefaults.standard.set(false, forKey: Self.wasLockedKey)
+        onUnlockPrompt?(false)
         screenLock.unlock()
         _ = screenPresence.unlock(at: lastAnalyzedTime)
         screen.wake()
@@ -836,8 +859,10 @@ final class Pipeline {
         let screenChange = screenPresence.update(personPresent: screenPresent, at: time)
         if screenPresence.state == .dimmed {
             if screenChange != nil {
-                let locked = lockEnabled && !enrolledFaces.isEmpty && faceSource.isAvailable && accessibilityTrusted
-                    && ScreenLock.canAuthenticate && engageLock()
+                // Touch ID or the password is the floor; an enrolled face only adds a way in that needs no
+                // touching. Without that floor a dark screen was just a screensaver anyone could clear with a
+                // keypress, which is what the user objected to (2026-09-14).
+                let locked = lockEnabled && accessibilityTrusted && ScreenLock.canAuthenticate && engageLock()
                 screen.dim(wakesOnInput: !locked)
                 logMotion(locked ? "🔒 사람 없음 · 화면 잠금" : "🌙 사람 없음 · 화면 어둡게")
             }
@@ -923,16 +948,8 @@ final class Pipeline {
             if analyzer.isSwipeArmed != swipeArmed {
                 swipeArmed = analyzer.isSwipeArmed
             }
-            // The sweep and the pump, nothing else — no pinch drags, no zoom, no held poses. The user's call
-            // (2026-09-14) was that this mode hear left and right only, and the pump is here because a palm held out
-            // for a moment is already this mode: play/pause would be unreachable if it weren't.
-            let desktopActions = actionEvaluator.update(reading, swipe: analyzer.lastSwipe, at: time).filter {
-                switch $0 {
-                case .desktop, .media(.playPause): true
-                default: false
-                }
-            }
-            dispatch(desktopActions)
+            // Left and right, nothing else: no poses, no pinch drags, no zoom, and no play/pause either (the user's
+            // call, 2026-09-14). The pump is a fist now, and a fist in this mode is on its way to gesture mode.
             guard let swipe = analyzer.lastSwipe else { break }
             swipeCounts[swipe, default: 0] += 1
             logMotion(swipe == .left ? "👋 ← 왼쪽 스와이프" : "👋 → 오른쪽 스와이프")
@@ -943,6 +960,7 @@ final class Pipeline {
                 guard !Task.isCancelled else { return }
                 self?.lastSwipe = nil
             }
+            dispatch(actionEvaluator.update(nil, swipe: swipe, at: time))
 
         case .idle:
             break

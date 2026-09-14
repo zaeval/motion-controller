@@ -86,19 +86,35 @@ struct SwipeDetectorTests {
         #expect(fired == [.left])
     }
 
-    @Test func swipingAgainTakesAnotherHold() {
+    /// Sweeping the same way again doesn't wait for another standstill — the user's complaint (2026-09-14) was that
+    /// it did — and the hand going back between sweeps still fires nothing.
+    @Test func sweepingTheSameWayAgainNeedsNoNewHold() {
         var detector = SwipeDetector()
         _ = feed(&detector, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
         var fired = feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.72, 0.6), seconds: 0.2, at: 0.4)
-        // Straight back and straight over again, with no hold in between.
+        #expect(fired == [.left])
+        // Straight back and straight over again, with nothing held in between.
         fired += feed(&detector, from: Vec2(0.72, 0.6), to: Vec2(0.5, 0.6), seconds: 0.3, at: 0.6)
         fired += feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.72, 0.6), seconds: 0.2, at: 0.9)
-        #expect(fired == [.left])
-        // Back, held, and over again.
         fired += feed(&detector, from: Vec2(0.72, 0.6), to: Vec2(0.5, 0.6), seconds: 0.3, at: 1.1)
-        fired += feed(&detector, from: Vec2(0.5, 0.6), seconds: 0.4, at: 1.4)
-        fired += feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.72, 0.6), seconds: 0.2, at: 1.8)
-        #expect(fired == [.left, .left])
+        fired += feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.72, 0.6), seconds: 0.2, at: 1.4)
+        #expect(fired == [.left, .left, .left])
+    }
+
+    /// The hand coming back ends up about where the sweep started; a sweep meant the other way carries on past it.
+    /// That geometry, not a timer, is what tells them apart.
+    @Test func aSweepPastWhereTheLastOneStartedCountsTheOtherWay() {
+        var detector = SwipeDetector()
+        _ = feed(&detector, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
+        var fired = feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.72, 0.6), seconds: 0.2, at: 0.4)
+        #expect(fired == [.left])
+        // Back to where it started: the return, not a swipe.
+        fired += feed(&detector, from: Vec2(0.72, 0.6), to: Vec2(0.5, 0.6), seconds: 0.3, at: 0.7)
+        #expect(fired == [.left])
+        // A beat, then the same distance again the other way: meant, and no longer held off for a second and a half.
+        fired += feed(&detector, from: Vec2(0.5, 0.6), seconds: 0.2, at: 1.0)
+        fired += feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.28, 0.6), seconds: 0.25, at: 1.2)
+        #expect(fired == [.left, .right])
     }
 
     @Test func aSlowDriftOrAHandComingDownDoesNotSwitch() {

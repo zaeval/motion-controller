@@ -2,19 +2,19 @@ import Foundation
 import Testing
 @testable import GestureCore
 
-struct PalmPumpDetectorTests {
+struct FistPumpDetectorTests {
     private static let frame = 1.0 / 30
     private static let resting = 0.15
 
     /// Feeds frames at `scale` for `seconds` and returns how many times the gesture fired.
     private func feed(
-        _ detector: inout PalmPumpDetector, scale: Double, seconds: TimeInterval, from start: TimeInterval,
-        anchor: Vec2 = Vec2(0.5, 0.5), openPalm: Bool = true, fist: Bool = false
+        _ detector: inout FistPumpDetector, scale: Double, seconds: TimeInterval, from start: TimeInterval,
+        anchor: Vec2 = Vec2(0.5, 0.5), fist: Bool = true, openHand: Bool = false
     ) -> Int {
         var fired = 0
         for index in 0...Int((seconds / Self.frame).rounded()) {
-            let sample = PalmPumpDetector.Sample(
-                handScale: scale, anchor: anchor, openPalm: openPalm, fist: fist
+            let sample = FistPumpDetector.Sample(
+                handScale: scale, anchor: anchor, fist: fist, openHand: openHand
             )
             if detector.update(sample, at: start + Double(index) * Self.frame) { fired += 1 }
         }
@@ -23,7 +23,7 @@ struct PalmPumpDetectorTests {
 
     /// One push out and back, as a hand moving toward the camera and returning.
     private func pump(
-        _ detector: inout PalmPumpDetector, from start: TimeInterval, out: Double = 1.25,
+        _ detector: inout FistPumpDetector, from start: TimeInterval, out: Double = 1.25,
         anchor: Vec2 = Vec2(0.5, 0.5)
     ) -> Int {
         var fired = feed(&detector, scale: Self.resting * out, seconds: 0.1, from: start, anchor: anchor)
@@ -32,7 +32,7 @@ struct PalmPumpDetectorTests {
     }
 
     @Test func twoPushesPlayOrPause() {
-        var detector = PalmPumpDetector()
+        var detector = FistPumpDetector()
         // A moment of the palm at rest sets the baseline.
         #expect(feed(&detector, scale: Self.resting, seconds: 0.3, from: 0) == 0)
         #expect(pump(&detector, from: 0.33) == 0)
@@ -40,7 +40,7 @@ struct PalmPumpDetectorTests {
     }
 
     @Test func onePushIsNotEnough() {
-        var detector = PalmPumpDetector()
+        var detector = FistPumpDetector()
         _ = feed(&detector, scale: Self.resting, seconds: 0.3, from: 0)
         #expect(pump(&detector, from: 0.33) == 0)
         // Held there afterwards: still one push.
@@ -48,7 +48,7 @@ struct PalmPumpDetectorTests {
     }
 
     @Test func pushesTooFarApartAreTwoSeparateMotions() {
-        var detector = PalmPumpDetector()
+        var detector = FistPumpDetector()
         _ = feed(&detector, scale: Self.resting, seconds: 0.3, from: 0)
         #expect(pump(&detector, from: 0.33) == 0)
         // Past the window: the first push has expired, so this is a first push again.
@@ -57,15 +57,25 @@ struct PalmPumpDetectorTests {
     }
 
     @Test func aParkNeverPumps() {
-        var detector = PalmPumpDetector()
+        var detector = FistPumpDetector()
         _ = feed(&detector, scale: Self.resting, seconds: 0.4, from: 0)
-        // 🖐 folded into ✊ and pulled back: the hand only ever gets smaller, and it stops being an open palm.
-        #expect(feed(&detector, scale: Self.resting * 0.8, seconds: 0.3, from: 0.43, openPalm: false, fist: true) == 0)
-        #expect(feed(&detector, scale: Self.resting * 0.5, seconds: 0.5, from: 0.76, openPalm: false, fist: true) == 0)
+        // ✊ pulled back: the hand only ever gets smaller, so there is no push to count.
+        #expect(feed(&detector, scale: Self.resting * 0.8, seconds: 0.3, from: 0.43) == 0)
+        #expect(feed(&detector, scale: Self.resting * 0.5, seconds: 0.5, from: 0.76) == 0)
+    }
+
+    /// Opening the hand is the cancel: a palm shown mid-pump is on its way to desktop mode instead.
+    @Test func openingTheHandCancelsThePump() {
+        var detector = FistPumpDetector()
+        _ = feed(&detector, scale: Self.resting, seconds: 0.3, from: 0)
+        #expect(pump(&detector, from: 0.33) == 0)
+        #expect(feed(&detector, scale: Self.resting, seconds: 0.2, from: 0.6, fist: false, openHand: true) == 0)
+        // The second push after that counts as a first one again, so nothing fires.
+        #expect(pump(&detector, from: 0.85) == 0)
     }
 
     @Test func aSweepAcrossTheFrameNeverPumps() {
-        var detector = PalmPumpDetector()
+        var detector = FistPumpDetector()
         _ = feed(&detector, scale: Self.resting, seconds: 0.3, from: 0)
         // The hand leans in as it lifts and then travels sideways: the travel disqualifies it.
         #expect(pump(&detector, from: 0.33, anchor: Vec2(0.5, 0.5)) == 0)
@@ -73,7 +83,7 @@ struct PalmPumpDetectorTests {
     }
 
     @Test func aHandThatGoesMissingStartsOver() {
-        var detector = PalmPumpDetector()
+        var detector = FistPumpDetector()
         _ = feed(&detector, scale: Self.resting, seconds: 0.3, from: 0)
         #expect(pump(&detector, from: 0.33) == 0)
         let firedOnTheGap = detector.update(nil, at: 0.6)
@@ -84,12 +94,12 @@ struct PalmPumpDetectorTests {
     }
 
     @Test func aSlowReachTowardTheCameraIsNotAPump() {
-        var detector = PalmPumpDetector()
+        var detector = FistPumpDetector()
         // Creeping closer: the baseline follows the hand, so nothing ever reads as a push.
         var fired = 0
         for index in 0...90 {
-            let sample = PalmPumpDetector.Sample(
-                handScale: Self.resting * (1 + 0.004 * Double(index)), anchor: Vec2(0.5, 0.5), openPalm: true
+            let sample = FistPumpDetector.Sample(
+                handScale: Self.resting * (1 + 0.004 * Double(index)), anchor: Vec2(0.5, 0.5), fist: true
             )
             if detector.update(sample, at: Double(index) * Self.frame) { fired += 1 }
         }
@@ -97,7 +107,7 @@ struct PalmPumpDetectorTests {
     }
 
     @Test func itDoesNotFireTwiceForOneGesture() {
-        var detector = PalmPumpDetector()
+        var detector = FistPumpDetector()
         _ = feed(&detector, scale: Self.resting, seconds: 0.3, from: 0)
         _ = pump(&detector, from: 0.33)
         #expect(pump(&detector, from: 0.6) == 1)

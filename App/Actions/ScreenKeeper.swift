@@ -26,8 +26,10 @@ final class ScreenKeeper {
     private static let reason = "Motion Controller: someone is in front of the camera" as CFString
     /// Share of full brightness left while dimmed: none, as the user asked (2026-09-14).
     private static let dimmedLevel = 0.0
-    /// While the Touch ID / password dialog is up: enough to read it and find the keys.
-    private static let dialogLevel = 0.35
+    /// While the Touch ID / password dialog is up: all the way back, because `LockBlurPanel` covers the desktop
+    /// with frosted glass at the same time. Dimming the screen instead left the desktop readable through it, which
+    /// the user objected to (2026-09-14).
+    private static let dialogLevel = 1.0
     /// Under the shortest display-sleep setting macOS offers, one minute.
     private static let activityInterval: TimeInterval = 30
 

@@ -13,7 +13,7 @@ struct ModeControllerTests {
             timestamp: time, chirality: .right, pose: fist ? .fist : pose, isPinching: pose == .pinch, pinchAxis: nil,
             pinchTotals: [:], palmSpeed: 0, isSweeping: false, isStill: true, inActiveRegion: true, openness: nil,
             palmFacesCamera: true, extendedFingers: [], steps: [], zoomStep: 0, pointer: Vec2(0.5, 0.6), handScale: 0.15,
-            imageAspect: 16.0 / 9, isFist: fist, tap: tap, isTapDipping: false, idleGesture: idleGesture, palmPump: false,
+            imageAspect: 16.0 / 9, isFist: fist, tap: tap, isTapDipping: false, idleGesture: idleGesture, fistPump: false,
             isIndexBent: false, indexReachAlongPalm: nil, straightIndexReach: nil
         )
     }
