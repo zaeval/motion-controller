@@ -124,8 +124,20 @@ struct OverlayView: View {
         if status.scrolling { return "✌️ 스크롤" }
         if status.zooming { return "🤟 ↑ 확대 · ↓ 축소" }
         if pipeline.modeProgress > 0 { return "✊ 제스처 모드로 전환 \(progressBar(pipeline.modeProgress))" }
+        // What the other hand is holding, when there is one: it is the hand doing the clicking now.
+        if let other = pipeline.secondHandPose {
+            let says: String
+            switch other {
+            case .pointIndex: says = "☝️ 굽혔다 펴면 클릭"
+            case .victory: says = "✌️ 검지 굽혔다 펴면 우클릭"
+            case .fist: says = "✊ 누름 유지"
+            case .openPalm, .backOfHand: says = "🖐 위아래로 스크롤"
+            default: says = String(describing: other)
+            }
+            return "🤚 반대손 \(says)"
+        }
         if status.engaged { return "👉 이동 중 · 검지 펴면 멈춤" }
-        return "👉 굽혀 이동 · ☝️ 톡 클릭 · ✌️ 톡 우클릭 · 🤏 드래그 · ✊ 끝"
+        return "👉 굽혀 이동 · 반대손 ☝️ 굽혔다 펴기 = 클릭 · ✊ = 누름 · 🖐 = 스크롤"
     }
 
     private var gestureDetail: String {

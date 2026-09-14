@@ -17,17 +17,20 @@ public enum SecondHandIntent: Equatable, Sendable {
 /// the tap, the ✌️ for a right click and the pinch for a drag all move the pointer at the moment precision matters
 /// most. The hand that started moving the cursor keeps it, and the other hand does the buttons.
 ///
-/// Shapes rather than taps, also their call: a shape appearing is far easier to see than a finger dipping for two
-/// frames, and on a hand that isn't carrying the cursor there is nothing to lose by changing it.
+/// The shape decides what the hand means, which is easy to see, and only the click waits for a finger to move:
 ///
-/// - ☝️ index alone → click. Show it twice in quick succession for a double-click; `PointerController` chains those.
-/// - ✌️ two fingers → right click.
+/// - ☝️ index alone gets ready, and then **bending the index and straightening it again** clicks — the user's call
+///   (2026-09-14): raising a finger shouldn't already be a click, because getting the hand into position is not an
+///   instruction. Two clicks in quick succession double-click; `PointerController` chains those.
+/// - ✌️ two fingers, then the same bend of the index → right click.
 /// - ✊ fist → the button goes down and stays down; opening the hand lets go. That is the drag, and unlike a pinch on
 ///   the cursor hand it can't nudge the pointer.
 /// - 🖐 flat hand moving up or down → scroll.
 ///
-/// Each shape acts once, when it settles; it has to change to something else before it can act again. A hand that
-/// goes missing lets go of anything it was holding.
+/// The fist and the flat hand act on the shape itself; the two clicking shapes act on the bend, so they can click
+/// again and again without being lowered. While a bend is under way the settled shape is held, which is also what
+/// keeps a bending index — briefly a closed hand — from reading as the fist. A hand that goes missing lets go of
+/// anything it was holding.
 public struct SecondHandControl: Sendable {
     public struct Settings: Codable, Equatable, Sendable {
         /// Frames the same shape has to hold before it counts.
@@ -36,6 +39,15 @@ public struct SecondHandControl: Sendable {
         public var scrollStep = 0.02
         /// A hand gone this long is gone: it lets go and the next shape counts afresh.
         public var lostGrace: TimeInterval = 0.2
+        /// The index has bent once its reach falls below this fraction of how far it was reaching...
+        public var dipFraction = 0.72
+        /// ...and the click lands when it is back above this fraction. Both from `TapDetector`, measured there.
+        public var recoverFraction = 0.85
+        /// A bend held longer than this is a finger being folded rather than clicked; the reach it settles at becomes
+        /// the new straight one.
+        public var maxDipSeconds: TimeInterval = 0.45
+        /// A finger reaching less than this (hand sizes) is already folded and has nothing to bend.
+        public var minStraightReach = 0.6
 
         public init() {}
     }
@@ -44,10 +56,13 @@ public struct SecondHandControl: Sendable {
         public var pose: StaticPose?
         /// Palm anchor in image-height units.
         public var anchor: Vec2
+        /// Index tip → its own knuckle, in hand sizes: how far the index is reaching.
+        public var indexReach: Double?
 
-        public init(pose: StaticPose?, anchor: Vec2) {
+        public init(pose: StaticPose?, anchor: Vec2, indexReach: Double? = nil) {
             self.pose = pose
             self.anchor = anchor
+            self.indexReach = indexReach
         }
     }
 
@@ -56,10 +71,16 @@ public struct SecondHandControl: Sendable {
     public private(set) var pose: StaticPose?
     /// The button is being held by a fist.
     public private(set) var isPressing = false
+    /// A clicking shape is settled and waiting for the bend.
+    public var isArmed: Bool { Self.clicks(pose) }
     private var candidatePose: StaticPose?
     private var candidateFrames = 0
     private var scrollAnchor: Double?
     private var lastSeen: TimeInterval?
+    /// How far the index reaches when straight, learnt while the shape is settled.
+    private var straightReach: Double?
+    /// When the index started bending.
+    private var dipSince: TimeInterval?
 
     public init(settings: Settings = Settings()) {
         self.settings = settings
@@ -72,6 +93,11 @@ public struct SecondHandControl: Sendable {
             return letGo()
         }
         lastSeen = time
+        // A bending index reads as a closed hand for a frame or two: the settled shape is held until the bend is
+        // done, so it can't turn into the fist's press.
+        if dipSince != nil {
+            return dip(sample.indexReach, at: time)
+        }
         if candidatePose == sample.pose {
             candidateFrames += 1
         } else {
@@ -79,8 +105,9 @@ public struct SecondHandControl: Sendable {
             candidateFrames = 1
         }
         guard candidateFrames >= settings.candidateFrames, candidatePose != pose else {
-            // The settled shape hasn't changed; a flat hand keeps scrolling while it is held.
-            return Self.scrolls(pose) ? scroll(to: sample.anchor.y) : []
+            // The settled shape hasn't changed: a flat hand keeps scrolling, a clicking shape watches for the bend.
+            if Self.scrolls(pose) { return scroll(to: sample.anchor.y) }
+            return Self.clicks(pose) ? dip(sample.indexReach, at: time) : []
         }
         var intents: [SecondHandIntent] = []
         if isPressing {
@@ -89,16 +116,16 @@ public struct SecondHandControl: Sendable {
         }
         pose = candidatePose
         scrollAnchor = nil
+        straightReach = nil
         switch pose {
-        case .pointIndex?:
-            intents.append(.click)
-        case .victory?:
-            intents.append(.rightClick)
         case .fist?:
             isPressing = true
             intents.append(.press)
         case let settled? where Self.scrolls(settled):
             scrollAnchor = sample.anchor.y
+        case let settled? where Self.clicks(settled):
+            // Ready, not clicked: the bend is the click.
+            intents += dip(sample.indexReach, at: time)
         default:
             break
         }
@@ -112,6 +139,37 @@ public struct SecondHandControl: Sendable {
     /// A flat hand, whichever way it is facing: a raised hand reads as either while it moves.
     private static func scrolls(_ pose: StaticPose?) -> Bool {
         pose == .openPalm || pose == .backOfHand
+    }
+
+    /// The two shapes whose index bend clicks.
+    private static func clicks(_ pose: StaticPose?) -> Bool {
+        pose == .pointIndex || pose == .victory
+    }
+
+    /// Watches the index of a settled clicking shape: down past `dipFraction` and back up past `recoverFraction` is
+    /// the click. A bend that stays down is the finger being folded, and where it settles becomes the new straight.
+    private mutating func dip(_ reach: Double?, at time: TimeInterval) -> [SecondHandIntent] {
+        guard let reach else { return [] }
+        guard let straight = straightReach else {
+            if reach >= settings.minStraightReach { straightReach = reach }
+            return []
+        }
+        guard let since = dipSince else {
+            if reach <= straight * settings.dipFraction {
+                dipSince = time
+            } else {
+                straightReach = max(straight, reach)
+            }
+            return []
+        }
+        if time - since > settings.maxDipSeconds {
+            dipSince = nil
+            straightReach = nil
+            return []
+        }
+        guard reach >= straight * settings.recoverFraction else { return [] }
+        dipSince = nil
+        return [pose == .victory ? .rightClick : .click]
     }
 
     private mutating func scroll(to y: Double) -> [SecondHandIntent] {
@@ -132,6 +190,8 @@ public struct SecondHandControl: Sendable {
         candidatePose = nil
         candidateFrames = 0
         scrollAnchor = nil
+        straightReach = nil
+        dipSince = nil
         lastSeen = nil
         return intents
     }

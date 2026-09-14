@@ -1020,7 +1020,10 @@ final class Pipeline {
             // No hysteresis needed on a hand that isn't holding anything: a pinch here only has to be recognized
             // well enough not to read as a pointing finger.
             let pinching = (features.pinchRatio ?? .infinity) <= analyzer.settings.pinch.engageRatio
-            return SecondHandControl.Sample(pose: GestureRules.classify(features, pinching: pinching), anchor: anchor)
+            return SecondHandControl.Sample(
+                pose: GestureRules.classify(features, pinching: pinching), anchor: anchor,
+                indexReach: features.reach(.index)
+            )
         }
         let intents = secondHand.update(sample, at: time)
         if secondHand.pose != secondHandPose {

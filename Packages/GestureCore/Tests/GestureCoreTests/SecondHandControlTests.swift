@@ -5,36 +5,57 @@ import Testing
 struct SecondHandControlTests {
     private static let frame = 1.0 / 30
 
-    /// Holds `pose` for `seconds` and returns everything it asked for. `rising` moves the hand up as it goes.
+    /// Holds `pose` for `seconds` and returns everything it asked for. `rising` moves the hand up as it goes, and
+    /// `reach` is how far the index is reaching (0.9 is straight, 0.5 is bent).
     private func hold(
         _ control: inout SecondHandControl, _ pose: StaticPose?, seconds: TimeInterval, from start: TimeInterval,
-        y: Double = 0.5, rising: Double = 0
+        y: Double = 0.5, rising: Double = 0, reach: Double = 0.9
     ) -> [SecondHandIntent] {
         var intents: [SecondHandIntent] = []
         for index in 0...Int((seconds / Self.frame).rounded()) {
             let sample = SecondHandControl.Sample(
-                pose: pose, anchor: Vec2(0.3, y + rising * Double(index) * Self.frame)
+                pose: pose, anchor: Vec2(0.3, y + rising * Double(index) * Self.frame), indexReach: reach
             )
             intents += control.update(sample, at: start + Double(index) * Self.frame)
         }
         return intents
     }
 
-    @Test func anIndexClicksOnceEachTimeItIsShown() {
-        var control = SecondHandControl()
-        #expect(hold(&control, .pointIndex, seconds: 0.5, from: 0) == [.click])
-        #expect(control.pose == .pointIndex)
-        // Still up: one shape, one click.
-        #expect(hold(&control, .pointIndex, seconds: 0.5, from: 0.6).isEmpty)
-        // Away and back again is another click.
-        #expect(hold(&control, nil, seconds: 0.3, from: 1.2).isEmpty)
-        #expect(hold(&control, .pointIndex, seconds: 0.3, from: 1.6) == [.click])
+    /// Settles the shape, then bends the index and straightens it: one click.
+    private func bend(
+        _ control: inout SecondHandControl, _ pose: StaticPose, from start: TimeInterval, down: Double = 0.5
+    ) -> [SecondHandIntent] {
+        var intents = hold(&control, pose, seconds: 0.1, from: start, reach: down)
+        intents += hold(&control, pose, seconds: 0.1, from: start + 0.13, reach: 0.9)
+        return intents
     }
 
-    @Test func twoFingersRightClick() {
+    /// Raising the finger gets ready; bending it and straightening it again is the click (the user's call).
+    @Test func theIndexClicksWhenItBendsAndComesBack() {
         var control = SecondHandControl()
-        #expect(hold(&control, .victory, seconds: 0.3, from: 0) == [.rightClick])
-        #expect(hold(&control, .pointIndex, seconds: 0.3, from: 0.4) == [.click])
+        #expect(hold(&control, .pointIndex, seconds: 0.5, from: 0).isEmpty)
+        #expect(control.pose == .pointIndex)
+        #expect(control.isArmed)
+        #expect(bend(&control, .pointIndex, from: 0.6) == [.click])
+        // And again, without lowering the hand.
+        #expect(bend(&control, .pointIndex, from: 0.9) == [.click])
+    }
+
+    /// A finger folded and left there is not a click: it becomes the new straight, so straightening it doesn't fire.
+    @Test func aFingerFoldedAndLeftThereDoesNotClick() {
+        var control = SecondHandControl()
+        _ = hold(&control, .pointIndex, seconds: 0.3, from: 0)
+        #expect(hold(&control, .pointIndex, seconds: 0.6, from: 0.4, reach: 0.5).isEmpty)
+        #expect(hold(&control, .pointIndex, seconds: 0.2, from: 1.1, reach: 0.9).isEmpty)
+    }
+
+    @Test func twoFingersRightClickOnTheSameBend() {
+        var control = SecondHandControl()
+        #expect(hold(&control, .victory, seconds: 0.3, from: 0).isEmpty)
+        #expect(bend(&control, .victory, from: 0.4) == [.rightClick])
+        // The same hand going to one finger clicks on its next bend instead.
+        _ = hold(&control, .pointIndex, seconds: 0.3, from: 0.7)
+        #expect(bend(&control, .pointIndex, from: 1.1) == [.click])
     }
 
     /// The fist is the drag: down while it is held, up when the hand opens.
@@ -44,6 +65,7 @@ struct SecondHandControlTests {
         #expect(control.isPressing)
         #expect(hold(&control, .fist, seconds: 1.0, from: 0.4).isEmpty)
         #expect(hold(&control, .openPalm, seconds: 0.3, from: 1.5) == [.release])
+        #expect(control.pose == .openPalm)
         #expect(!control.isPressing)
     }
 
@@ -80,12 +102,25 @@ struct SecondHandControlTests {
         var intents: [SecondHandIntent] = []
         for index in 0..<2 {
             intents += control.update(
-                SecondHandControl.Sample(pose: .pointIndex, anchor: Vec2(0.3, 0.5)),
+                SecondHandControl.Sample(pose: .pointIndex, anchor: Vec2(0.3, 0.5), indexReach: 0.9),
                 at: 0.3 + Double(index) * Self.frame
             )
         }
         #expect(intents.isEmpty)
         #expect(control.pose == nil)
+    }
+
+    /// The index bending is briefly a closed hand: that must not become the fist's press.
+    @Test func aBendingIndexIsNotAFist() {
+        var control = SecondHandControl()
+        _ = hold(&control, .pointIndex, seconds: 0.3, from: 0)
+        var intents = hold(&control, .fist, seconds: 0.1, from: 0.4, reach: 0.4)
+        intents += hold(&control, .pointIndex, seconds: 0.1, from: 0.53, reach: 0.9)
+        #expect(intents == [.click])
+        #expect(!control.isPressing)
+        // A fist meant as a fist still presses, once the bend has timed out.
+        _ = hold(&control, .fist, seconds: 0.6, from: 0.7, reach: 0.3)
+        #expect(control.isPressing)
     }
 }
 
