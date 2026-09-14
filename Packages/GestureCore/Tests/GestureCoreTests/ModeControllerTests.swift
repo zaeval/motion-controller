@@ -11,7 +11,7 @@ struct ModeControllerTests {
         GestureReading(
             timestamp: time, chirality: .right, pose: fist ? .fist : pose, isPinching: pose == .pinch, pinchAxis: nil,
             pinchTotals: [:], palmSpeed: 0, isSweeping: false, isStill: true, inActiveRegion: true, openness: nil,
-            palmFacesCamera: true, extendedFingers: [], steps: [], pointer: Vec2(0.5, 0.6), handScale: 0.15,
+            palmFacesCamera: true, extendedFingers: [], steps: [], zoomStep: 0, pointer: Vec2(0.5, 0.6), handScale: 0.15,
             imageAspect: 16.0 / 9, isFist: fist, tap: tap, isTapDipping: false, idleGesture: idleGesture,
             isIndexBent: false, indexReachAlongPalm: nil, straightIndexReach: nil
         )
@@ -66,7 +66,7 @@ struct ModeControllerTests {
         #expect(controller.mode == .pointer)
     }
 
-    @Test func palmFoldedAndPulledBackParksAndThatFistMustOpenBeforeResuming() {
+    @Test func aFistPulledBackParksAndThatFistMustOpenBeforeResuming() {
         var fromGestures = ModeController()
         #expect(fromGestures.update(reading(fist: true, idleGesture: true, at: 0), personPresent: true, at: 0) == .idle)
 
@@ -77,11 +77,21 @@ struct ModeControllerTests {
         #expect(feed(&controller, from: 1.3, seconds: 0.8) { reading(fist: true, at: $0) } == [.normal])
     }
 
+    @Test func theFistThatResumesFromIdleMustOpenBeforeItCanParkAgain() {
+        var controller = ModeController(mode: .idle)
+        #expect(feed(&controller, from: 0, seconds: 0.8) { reading(fist: true, at: $0) } == [.normal])
+        // Still that fist, looking pulled back as the hand comes down: not a park.
+        #expect(controller.update(reading(fist: true, idleGesture: true, at: 0.8), personPresent: true, at: 0.8) == nil)
+        // Opened, then closed and pulled back on purpose: a park.
+        _ = feed(&controller, from: 0.83, seconds: 0.2) { reading(.openPalm, at: $0) }
+        #expect(controller.update(reading(fist: true, idleGesture: true, at: 1.1), personPresent: true, at: 1.1) == .idle)
+    }
+
     @Test func nobodyInFrontParksRecognition() {
         var controller = ModeController()
         #expect(feed(&controller, from: 0, seconds: 1.0) { reading(.openPalm, at: $0) }.isEmpty)
-        #expect(feed(&controller, from: 1.0, seconds: 1.5, present: false) { _ in nil }.isEmpty)
-        #expect(feed(&controller, from: 2.5, seconds: 1.0, present: false) { _ in nil } == [.idle])
+        #expect(feed(&controller, from: 1.0, seconds: 4.5, present: false) { _ in nil }.isEmpty)
+        #expect(feed(&controller, from: 5.5, seconds: 1.0, present: false) { _ in nil } == [.idle])
     }
 
     @Test func pointerModeRidesOutALostFaceButParksOnceTheHandIsGoneToo() {
@@ -117,8 +127,16 @@ struct ModeControllerTests {
         #expect(controller.update(reading(fist: true, idleGesture: true, at: 5), personPresent: true, at: 5) == .idle)
         #expect(controller.lastChangeReason == .idleGesture)
         controller.set(.normal)
-        #expect(feed(&controller, from: 5.1, seconds: 2.5, present: false) { _ in nil } == [.idle])
+        #expect(feed(&controller, from: 5.1, seconds: 5.5, present: false) { _ in nil } == [.idle])
         #expect(controller.lastChangeReason == .absence)
+    }
+
+    @Test func theScreenLockingParksWhateverModeItFinds() {
+        for start in [InteractionMode.normal, .pointer] {
+            var controller = ModeController(mode: start)
+            #expect(controller.set(.idle, because: .screenLocked) == .idle)
+            #expect(controller.lastChangeReason == .screenLocked)
+        }
     }
 
     @Test func switchingOnFromTheMenuWaitsForAHand() {

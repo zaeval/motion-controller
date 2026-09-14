@@ -18,6 +18,8 @@ public struct GestureReading: Sendable {
     /// Thumb, index, middle, ring, little.
     public var extendedFingers: [Bool]
     public var steps: [PinchAxisControl.Step]
+    /// A zoom step that fired on this frame: +1 in, -1 out, 0 none.
+    public var zoomStep: Int
     /// Wrist–middle-knuckle midpoint in Vision-normalized coordinates (un-mirrored, y up): the point the cursor rides.
     public var pointer: Vec2?
     /// Hand size in image heights.
@@ -30,7 +32,7 @@ public struct GestureReading: Sendable {
     public var tap: FingerTap?
     /// The index is bending for a tap.
     public var isTapDipping: Bool
-    /// An open palm folded into a fist and pulled back, completed on this frame.
+    /// A fist pulled back, completed on this frame.
     public var idleGesture: Bool
     /// The index is held bent toward the camera: the hand moves the cursor.
     public var isIndexBent: Bool
@@ -55,6 +57,7 @@ public struct GestureAnalyzer: Sendable {
         public var tap = TapDetector.Settings()
         public var idle = IdleGestureDetector.Settings()
         public var bend = IndexBendDetector.Settings()
+        public var zoom = ZoomControl.Settings()
         /// Only a hand whose anchor is above this (Vision-normalized y) counts as raised. Off: the user asked
         /// (2026-09-12) that nothing require raising the hand.
         public var activeRegionMinY = 0.0
@@ -82,12 +85,16 @@ public struct GestureAnalyzer: Sendable {
     private var taps = TapDetector()
     private var idle = IdleGestureDetector()
     private var indexBend = IndexBendDetector()
+    private var zoom = ZoomControl()
     private var lastHandTime: TimeInterval = -.infinity
 
     /// The swipe that completed on the frame just fed, if any. It sits outside `GestureReading` because a swipe fires
     /// a short moment after the stroke stops and fast strokes end with the hand blurred out of tracking, so the
     /// frame it lands on often has no hand — and a reading on such a frame would read as a hand being present.
     public private(set) var lastSwipe: SwipeDirection?
+
+    /// The palm has held still, and sweeping it sideways now switches desktops.
+    public var isSwipeArmed: Bool { swipe.isArmed }
 
     public init(settings: Settings = Settings()) {
         self.settings = settings
@@ -101,6 +108,7 @@ public struct GestureAnalyzer: Sendable {
             _ = taps.update(nil, at: time)
             _ = idle.update(nil, at: time)
             _ = indexBend.update(nil, at: time)
+            zoom.reset()
             if time - lastHandTime > settings.handLostReset {
                 pinch.reset()
                 axisControl.reset()
@@ -116,11 +124,17 @@ public struct GestureAnalyzer: Sendable {
         let pinching = pinch.update(pinchRatio: features.pinchRatio, sweeping: sweeping, moving: palmMotion.speed > settings.movingSpeed)
         let isFist = features.isFist
         let pose = GestureRules.classify(features, pinching: pinching)
+        // Both modes zoom from here, so the steps are the same whichever one the hand is in.
+        let zoomStep = zoom.update(
+            active: pose == .threeFingers && inActiveRegion, anchor: anchor, handSize: features.scale, at: time
+        )
 
         let swipeSample = SwipeDetector.Sample(
             anchor: anchor,
             flatHand: Finger.allCases.filter { features.isExtended($0) == true }.count >= 3,
             pinching: pinching,
+            fist: isFist,
+            palmFacesCamera: features.palmFacesCamera,
             imageAspect: hand.imageAspect
         )
         lastSwipe = swipe.update(swipeSample, at: time)
@@ -144,7 +158,7 @@ public struct GestureAnalyzer: Sendable {
         let indexReachAlongPalm = features.reachAlongPalm(.index)
         let isIndexBent = indexBend.update(indexReachAlongPalm, at: time, holding: taps.isDipping)
         let idleGesture = idle.update(
-            IdleGestureDetector.Sample(openPalm: pose == .openPalm, fist: isFist, handScale: features.scale),
+            IdleGestureDetector.Sample(fist: isFist, handScale: features.scale),
             at: time
         )
 
@@ -167,6 +181,7 @@ public struct GestureAnalyzer: Sendable {
             palmFacesCamera: features.palmFacesCamera,
             extendedFingers: features.extendedFingers,
             steps: steps,
+            zoomStep: zoomStep,
             pointer: pointer,
             handScale: features.scale,
             imageAspect: hand.imageAspect,
@@ -189,6 +204,7 @@ public struct GestureAnalyzer: Sendable {
         taps.reset()
         idle.reset()
         indexBend.reset()
+        zoom.reset()
         lastHandTime = -.infinity
     }
 
@@ -199,5 +215,6 @@ public struct GestureAnalyzer: Sendable {
         taps.settings = settings.tap
         idle.settings = settings.idle
         indexBend.settings = settings.bend
+        zoom.settings = settings.zoom
     }
 }

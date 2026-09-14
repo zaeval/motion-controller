@@ -19,9 +19,10 @@ public struct KeyCombo: Codable, Equatable, Sendable {
         self.modifiers = modifiers
     }
 
-    /// Switch to the previously used app. The switcher stays open until Command goes up, so the modifier has to be
-    /// sent as a real key event rather than a flag.
-    public static let commandTab = KeyCombo(keyCode: 0x30, modifiers: [.command])
+    /// Zoom (Accessibility) in and out, with "Use keyboard shortcuts to zoom" on. Synthetic ⌃-scrolls and trackpad
+    /// pinches never zoomed anything on macOS 26.5; these shortcuts do.
+    public static let zoomIn = KeyCombo(keyCode: 0x18, modifiers: [.option, .command])
+    public static let zoomOut = KeyCombo(keyCode: 0x1B, modifiers: [.option, .command])
 }
 
 public enum DesktopDirection: String, Codable, Sendable {

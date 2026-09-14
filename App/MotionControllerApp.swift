@@ -35,6 +35,19 @@ private struct MenuContent: View {
         Button(appState.isCalibrating ? "커서 영역 보정 취소" : "커서 영역 보정…") { appState.toggleCalibration() }
             .disabled(!appState.isEnabled)
         Button("커서 영역 기본값으로") { appState.pipeline.clearCalibration() }
+        Divider()
+        Toggle("까만 화면 잠금 (얼굴·Touch ID로 해제)", isOn: Binding(
+            get: { appState.pipeline.lockEnabled },
+            set: { appState.pipeline.lockEnabled = $0 }
+        ))
+        .disabled(appState.pipeline.faceTemplate == nil)
+        Button(appState.pipeline.faceTemplate == nil ? "얼굴 등록…" : "얼굴 다시 등록…") { appState.showEnrollment() }
+            .disabled(!appState.isEnabled || !appState.pipeline.faceUnlockAvailable)
+        if appState.pipeline.intruderPhotoCount > 0 {
+            Button("📸 잠긴 동안 찍힌 사진 \(appState.pipeline.intruderPhotoCount)장 보기…") {
+                appState.pipeline.revealIntruderPhotos()
+            }
+        }
         if !appState.pipeline.accessibilityTrusted {
             Button("손쉬운 사용 권한 설정 열기…") { appState.pipeline.openAccessibilitySettings() }
         }

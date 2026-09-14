@@ -42,6 +42,8 @@ struct DebugPreviewView: View {
 
                 Text(statsLine)
                     .font(.system(.body, design: .monospaced))
+                Text(lockLine)
+                    .font(.system(.body, design: .monospaced))
 
                 if let visionError = pipeline.visionError {
                     Text("Vision 오류 (\(pipeline.visionErrorCount)회): \(visionError)")
@@ -128,12 +130,19 @@ struct DebugPreviewView: View {
         )
     }
 
+    private var lockLine: String {
+        let face = pipeline.faceTemplate == nil ? "얼굴 미등록" : "얼굴 등록됨"
+        let lock = pipeline.isLocked ? "🔒 잠김" : pipeline.lockEnabled ? "잠금 켜짐" : "잠금 꺼짐"
+        let similarity = pipeline.lastFaceSimilarity.map { String(format: " · 유사도 %.2f", $0) } ?? ""
+        return "\(lock) · \(face)\(similarity)"
+    }
+
     private var pointerLine: String {
         let access = pipeline.accessibilityTrusted ? "손쉬운 사용 허용됨" : "손쉬운 사용 권한 필요"
         let person = pipeline.personPresent ? "사람 있음" : "사람 없음"
         guard pipeline.mode == .pointer else { return "\(pipeline.mode.displayName) · \(person) · \(access)" }
         let status = pipeline.pointerStatus
-        let state = status.dragging ? "드래그" : status.pressed ? "누름" : status.scrolling ? "스크롤" : status.engaged ? "이동" : "멈춤"
+        let state = status.dragging ? "드래그" : status.pressed ? "누름" : status.scrolling ? "스크롤" : status.zooming ? "확대/축소" : status.engaged ? "이동" : "멈춤"
         return "커서 · \(person) · \(access) · \(state)"
     }
 }
@@ -213,7 +222,7 @@ private struct ReadingPanel: View {
 }
 
 /// Mirrored so it reads like a mirror; Vision itself always gets the un-mirrored buffer.
-private struct CameraPreview: NSViewRepresentable {
+struct CameraPreview: NSViewRepresentable {
     let session: AVCaptureSession
     /// Only here so a camera switch re-applies mirroring to the new connection.
     let deviceID: String?

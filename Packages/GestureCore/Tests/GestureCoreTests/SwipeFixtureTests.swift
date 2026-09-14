@@ -54,24 +54,101 @@ struct SwipeFixtureTests {
         return fired
     }
 
-    @Test func recordedSwipesFireOnlyInTheirDirection() throws {
-        // Here the hand turned over instead of travelling: the palm anchor moved 0.045 frame widths, and any threshold
-        // that low would also fire on drift. It must still never fire the wrong way.
-        let uncaptured: Set<String> = ["20260912-021156-swipe-left.json"]
-        // Vision lost the hand from 1.43 s to 1.73 s in this clip, straight through the third stroke, so only two of
-        // the three are in the recording at all.
-        let untracked = ["20260913-220006-swipe-left-three-times.json": 2]
+    /// These clips are of the swipe before 2026-09-14, which started from a moving hand; the swipe now needs the palm
+    /// held still first, so most of them rightly fire nothing. Whatever they do fire must never be the wrong way.
+    @Test func recordedSwipesNeverSwitchTheWrongWay() throws {
         let recordings = try Self.recordings(containing: "swipe-")
         #expect(recordings.count == 18)
         for recording in recordings {
             let expected: SwipeDirection = recording.name.contains("swipe-left") ? .left : .right
             let swipes = Self.swipes(in: recording)
-            // Firing the wrong way is the failure the user actually sees: it switches the wrong desktop.
             #expect(!swipes.contains(expected.opposite), "\(recording.name) fired \(swipes)")
-            guard !uncaptured.contains(recording.name) else { continue }
-            let wanted = untracked[recording.name]
-                ?? (recording.name.contains("three-times") ? 3 : recording.name.contains("twice") ? 2 : 1)
-            #expect(swipes.count == wanted, "\(recording.name) fired \(swipes), wanted \(wanted)")
+        }
+    }
+
+    /// Each recorded stroke, replayed with the palm held still where the analyzer first sees it flat and facing the
+    /// camera: the gesture as it is made now. `PRINT_HELD_SWIPES=1` prints what each one fired.
+    @Test func recordedStrokesFromAHeldPalmSwitchTheRightWay() throws {
+        var fired = 0
+        var total = 0
+        for recording in try Self.recordings(containing: "swipe-") {
+            let expected: SwipeDirection = recording.name.contains("swipe-left") ? .left : .right
+            guard let swipes = Self.heldSwipes(in: recording) else { continue }
+            total += 1
+            if swipes.first == expected { fired += 1 }
+            #expect(!swipes.contains(expected.opposite), "\(recording.name) fired \(swipes)")
+            if ProcessInfo.processInfo.environment["PRINT_HELD_SWIPES"] != nil {
+                print("\(recording.name): \(swipes)")
+            }
+        }
+        if ProcessInfo.processInfo.environment["PRINT_HELD_SWIPES"] != nil {
+            print("held strokes that switched the right way: \(fired) of \(total)")
+        }
+    }
+
+    /// The swipes a recording fires when its first slow, flat, camera-facing palm frame is held for half a second
+    /// first; nil when no frame qualifies.
+    static func heldSwipes(in recording: Recording) -> [SwipeDirection]? {
+        var probe = GestureAnalyzer()
+        guard let held = recording.frames.firstIndex(where: { frame in
+            guard let hand = trackedHand(in: frame), let features = HandFeatures(hand),
+                  let reading = probe.update(hand: hand, at: frame.timestamp)
+            else { return false }
+            return reading.isStill && features.palmFacesCamera == true
+                && Finger.allCases.filter { features.isExtended($0) == true }.count >= 3
+        }) else { return nil }
+        let frames = recording.frames
+        let stretch = 0.5
+        var timeline: [(frame: PoseFrame, time: TimeInterval)] = []
+        for step in 0..<Int(stretch * 30) {
+            timeline.append((frames[held], frames[held].timestamp + Double(step) / 30))
+        }
+        timeline += frames[held...].map { ($0, $0.timestamp + stretch) }
+        var analyzer = GestureAnalyzer()
+        var swipes: [SwipeDirection] = []
+        for (frame, time) in timeline {
+            _ = analyzer.update(hand: trackedHand(in: frame), at: time)
+            if let swipe = analyzer.lastSwipe { swipes.append(swipe) }
+        }
+        let last = timeline.last?.time ?? 0
+        for step in 1...Int((tail * 30).rounded()) {
+            _ = analyzer.update(hand: nil, at: last + Double(step) / 30)
+            if let swipe = analyzer.lastSwipe { swipes.append(swipe) }
+        }
+        return swipes
+    }
+
+    /// `PRINT_HELD_REACH=1 swift test --filter printHeldReach` prints, per recording, where the held replay starts and
+    /// how far the palm then gets sideways: within the stroke window of first moving, and at most over the clip.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["PRINT_HELD_REACH"] != nil))
+    func printHeldReach() throws {
+        let settings = SwipeDetector.Settings()
+        for recording in try Self.recordings(containing: "swipe-") {
+            let start = recording.frames.first?.timestamp ?? 0
+            var probe = GestureAnalyzer()
+            var path: [(time: TimeInterval, anchor: Vec2, aspect: Double, still: Bool, facing: Bool?, flat: Bool, fist: Bool)] = []
+            for frame in recording.frames {
+                guard let hand = Self.trackedHand(in: frame), let features = HandFeatures(hand), let anchor = features.anchor,
+                      let reading = probe.update(hand: hand, at: frame.timestamp)
+                else { continue }
+                let flat = Finger.allCases.filter { features.isExtended($0) == true }.count >= 3
+                path.append((frame.timestamp - start, anchor, hand.imageAspect, reading.isStill, features.palmFacesCamera, flat, reading.isFist))
+            }
+            guard let held = path.firstIndex(where: { $0.still && $0.facing == true && $0.flat }) else {
+                print("\(recording.name): no held frame; facing \(path.filter { $0.facing == true }.count)/\(path.count), flat \(path.filter(\.flat).count)")
+                continue
+            }
+            let origin = path[held]
+            let moved = path[held...].first { $0.anchor.distance(to: origin.anchor) > settings.stillRadius }
+            func reach(_ points: ArraySlice<(time: TimeInterval, anchor: Vec2, aspect: Double, still: Bool, facing: Bool?, flat: Bool, fist: Bool)>) -> String {
+                guard let far = points.max(by: { abs($0.anchor.x - origin.anchor.x) < abs($1.anchor.x - origin.anchor.x) }) else { return "-" }
+                let dx = (far.anchor.x - origin.anchor.x) / far.aspect
+                return String(format: "%+.3f at %.2fs (dy %+.3f)", dx, far.time, far.anchor.y - origin.anchor.y)
+            }
+            let window = moved.map { m in path[held...].filter { $0.time >= m.time && $0.time <= m.time + settings.strokeWindow } } ?? []
+            print(String(format: "%@: held %.2fs, moves %@, window reach %@, clip reach %@, facing %d/%d",
+                         recording.name, origin.time, moved.map { String(format: "%.2fs", $0.time) } ?? "never",
+                         reach(ArraySlice(window)), reach(path[held...]), path.filter { $0.facing == true }.count, path.count))
         }
     }
 

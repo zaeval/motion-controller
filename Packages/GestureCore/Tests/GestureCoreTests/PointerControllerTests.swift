@@ -31,11 +31,11 @@ struct PointerControllerTests {
     }
 
     private func sample(
-        _ x: Double, _ y: Double, pinching: Bool = false, scroll: Bool = false, tap: FingerTap? = nil,
+        _ x: Double, _ y: Double, pinching: Bool = false, scroll: Bool = false, zoom: Bool = false, tap: FingerTap? = nil,
         holdStill: Bool = false, fist: Bool = false, engaged: Bool = true, scale: Double = 0.1
     ) -> PointerController.Sample {
         PointerController.Sample(
-            point: Vec2(x, y), handScale: scale, imageAspect: 1, pinching: pinching, scrollPose: scroll,
+            point: Vec2(x, y), handScale: scale, imageAspect: 1, pinching: pinching, scrollPose: scroll, zoomPose: zoom,
             tap: tap, holdStill: holdStill, fist: fist, engaged: engaged
         )
     }
@@ -309,6 +309,26 @@ struct PointerControllerTests {
         }
         #expect(!pointer.isScrolling)
         #expect(!commands.contains { $0.movePoint != nil })
+        #expect(isClose(pointer.cursor, Self.start))
+    }
+
+    @Test func threeFingersParkTheCursorWhileTheHandZooms() {
+        var pointer = relativeController()
+        _ = pointer.update(sample(0.5, 0.5), at: 0, systemCursor: Self.start)
+        var commands: [PointerCommand] = []
+        for index in 1...3 {
+            commands += pointer.update(sample(0.5, 0.5, zoom: true), at: Double(index) * Self.frame)
+        }
+        #expect(pointer.isZooming)
+        for index in 1...12 {
+            commands += pointer.update(sample(0.5, 0.5 + 0.2 * Double(index) / 12, zoom: true), at: Double(index + 3) * Self.frame)
+        }
+        // Leaving the pose where the hand now is doesn't move the cursor either.
+        for index in 16...20 {
+            commands += pointer.update(sample(0.5, 0.7), at: Double(index) * Self.frame)
+        }
+        #expect(!pointer.isZooming)
+        #expect(commands.isEmpty)
         #expect(isClose(pointer.cursor, Self.start))
     }
 

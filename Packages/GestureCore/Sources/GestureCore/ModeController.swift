@@ -15,7 +15,7 @@ public enum ModeChangeReason: String, Codable, Sendable {
     case doubleTap
     /// ✊ held.
     case fist
-    /// 🖐 folded into ✊ and pulled back.
+    /// ✊ pulled back.
     case idleGesture
     /// Pointer mode's hand was gone too long.
     case handLost
@@ -23,6 +23,8 @@ public enum ModeChangeReason: String, Codable, Sendable {
     case absence
     /// The menu or the debug preview.
     case menu
+    /// The dark screen locked, and nothing but its unlocking is recognized.
+    case screenLocked
 }
 
 /// Moves between idle, gesture and pointer modes. The app answers every change by releasing any held mouse button.
@@ -30,7 +32,8 @@ public enum ModeChangeReason: String, Codable, Sendable {
 /// - ☝️ tapped twice → pointer mode, from idle or gesture mode.
 /// - ✊ held → gesture mode, from idle or pointer mode. Never while a pinch holds the mouse button, and the fist that
 ///   just parked recognition has to open (or leave) first.
-/// - 🖐 folded into ✊ and pulled back → idle, from gesture or pointer mode.
+/// - ✊ pulled back → idle, from gesture or pointer mode; but not by the fist that just resumed from idle, which has to
+///   open first, or lowering it would park again.
 /// - Nobody in front of the camera for a while → idle, except in pointer mode, where the hand hides the face;
 ///   pointer mode whose hand has been gone a while → gesture mode, and absence parks it from there.
 public struct ModeController: Sendable {
@@ -42,7 +45,7 @@ public struct ModeController: Sendable {
         /// Pointer mode falls back to gesture mode once its hand has been gone this long.
         public var handLostExit: TimeInterval = 3.0
         /// Recognition parks once nobody has been in front of the camera this long.
-        public var absenceTimeout: TimeInterval = 2.0
+        public var absenceTimeout: TimeInterval = 5.0
         /// A hand gone this long has let go of the fist that parked recognition.
         public var fistReleaseAfterLoss: TimeInterval = 0.3
 
@@ -64,6 +67,8 @@ public struct ModeController: Sendable {
     private var firstFrame: TimeInterval?
     private var lastPersonSeen: TimeInterval?
     private var parkingFistHeld = false
+    /// The fist that just resumed recognition from idle is still closed, and can't park it again.
+    private var wakingFistHeld = false
 
     public init(settings: Settings = Settings(), mode: InteractionMode = .normal) {
         self.settings = settings
@@ -95,15 +100,21 @@ public struct ModeController: Sendable {
             _ = fist.update(detected: false, handStill: true, at: time)
             let since = handLostSince ?? time
             handLostSince = since
-            if time - since >= settings.fistReleaseAfterLoss { parkingFistHeld = false }
+            if time - since >= settings.fistReleaseAfterLoss {
+                parkingFistHeld = false
+                wakingFistHeld = false
+            }
             guard mode == .pointer, sawHandInPointerMode, time - since >= settings.handLostExit else { return nil }
             return change(to: .normal, because: .handLost)
         }
         handLostSince = nil
         if mode == .pointer { sawHandInPointerMode = true }
-        if !reading.isFist { parkingFistHeld = false }
+        if !reading.isFist {
+            parkingFistHeld = false
+            wakingFistHeld = false
+        }
 
-        if reading.idleGesture, mode != .idle {
+        if reading.idleGesture, mode != .idle, !wakingFistHeld {
             let changed = change(to: .idle, because: .idleGesture)
             parkingFistHeld = true
             return changed
@@ -113,13 +124,18 @@ public struct ModeController: Sendable {
             firstTap = time
         }
         let fisting = mode != .normal && reading.isFist && !parkingFistHeld && !holdingButton
-        return fist.update(detected: fisting, handStill: true, at: time) ? change(to: .normal, because: .fist) : nil
+        guard fist.update(detected: fisting, handStill: true, at: time) else { return nil }
+        let resuming = mode == .idle
+        let changed = change(to: .normal, because: .fist)
+        wakingFistHeld = resuming
+        return changed
     }
 
-    /// Switches directly: the menu toggle, or recognition turning off. Returns the mode when it changed.
+    /// Switches directly: the menu toggle, recognition turning off, or the screen locking. Returns the mode when it
+    /// changed.
     @discardableResult
-    public mutating func set(_ newMode: InteractionMode) -> InteractionMode? {
-        change(to: newMode, because: .menu)
+    public mutating func set(_ newMode: InteractionMode, because reason: ModeChangeReason = .menu) -> InteractionMode? {
+        change(to: newMode, because: reason)
     }
 
     /// Hold progress (0...1) of a fist toward gesture mode, for the overlay.
@@ -135,6 +151,7 @@ public struct ModeController: Sendable {
         firstTap = nil
         handLostSince = nil
         sawHandInPointerMode = false
+        wakingFistHeld = false
         return newMode
     }
 }

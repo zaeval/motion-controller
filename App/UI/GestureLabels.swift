@@ -32,10 +32,11 @@ extension ModeChangeReason {
         switch self {
         case .doubleTap: "톡톡"
         case .fist: "주먹"
-        case .idleGesture: "손바닥→주먹"
+        case .idleGesture: "주먹 뒤로"
         case .handLost: "손이 3초 안 보임"
         case .absence: "사람 없음"
         case .menu: "메뉴"
+        case .screenLocked: "화면 잠금"
         }
     }
 }
@@ -70,7 +71,7 @@ extension GestureAction {
     var displayName: String {
         switch self {
         case .media(let key): key.displayName
-        case .keyCombo(let combo): combo == .commandTab ? "⌘Tab 앱 전환" : "⌨️ 단축키"
+        case .keyCombo(let combo): combo == .zoomIn ? "🔍 확대" : combo == .zoomOut ? "🔍 축소" : "⌨️ 단축키"
         case .desktop(let direction): direction == .next ? "🖥 다음 데스크톱" : "🖥 이전 데스크톱"
         }
     }

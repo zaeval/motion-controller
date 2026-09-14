@@ -29,10 +29,17 @@ final class Pipeline {
         var progress: Double
     }
 
+    enum EnrollmentStatus: Equatable {
+        case off
+        case collecting
+        case saved
+    }
+
     struct PointerStatus: Equatable {
         var pressed = false
         var dragging = false
         var scrolling = false
+        var zooming = false
         /// The index is bent toward the camera, so hand movement moves the cursor.
         var engaged = false
     }
@@ -42,6 +49,14 @@ final class Pipeline {
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "Pipeline")
     /// Where a box the user calibrated is kept between launches.
     private static let boxKey = "pointerBox"
+    /// Whether the dark screen locks, once a face is enrolled.
+    private static let lockKey = "screenLock"
+    /// Photos of whoever tried to use the Mac while it was locked.
+    static let intruderPhotosDirectory = URL.applicationSupportDirectory
+        .appending(path: "MotionController/Intruders", directoryHint: .isDirectory)
+    /// The owner's face: embeddings only, never an image.
+    static let faceTemplateURL = URL.applicationSupportDirectory
+        .appending(path: "MotionController/owner-face.json", directoryHint: .notDirectory)
 
     let camera = CameraService()
     @ObservationIgnored private let handSource = HandSource()
@@ -55,7 +70,33 @@ final class Pipeline {
     @ObservationIgnored private let dispatcher = ActionDispatcher()
     @ObservationIgnored private var flashTask: Task<Void, Never>?
     /// Keeps App Nap and automatic termination away while the camera runs; a windowless menu-bar app is otherwise eligible for both.
+    /// It keeps display and system sleep away too: the user asked (2026-09-14) that the Mac never power down while this runs.
     @ObservationIgnored private var activity: NSObjectProtocol?
+    /// Blacks the screen out once nobody has been in front of the camera for a while.
+    @ObservationIgnored private let screen = ScreenKeeper()
+    @ObservationIgnored private var screenPresence = ScreenPresence()
+    /// Holds input back while the dark screen is locked, and asks for Touch ID or the password.
+    @ObservationIgnored private let screenLock = ScreenLock()
+    @ObservationIgnored private let faceSource = FaceSource()
+    @ObservationIgnored private var faceVerification = FaceVerification()
+    @ObservationIgnored private var enrollment: FaceEnrollment?
+    @ObservationIgnored private let snapshots = SnapshotTaker()
+    @ObservationIgnored private var intruderWatch = IntruderWatch()
+    /// Numbers intruder attempts; photos carry theirs, so one that arrives late still lands in the right attempt.
+    @ObservationIgnored private var attempt = 0
+    @ObservationIgnored private var attemptPhotos: [Data] = []
+    @ObservationIgnored private var keptAttempts: Set<Int> = []
+    /// Kept since the screen last came back: the alert shows them then.
+    @ObservationIgnored private var unseenIntruderPhotos: [URL] = []
+    /// Shows the alert for photos kept while locked, once the screen is back.
+    @ObservationIgnored var onIntruderPhotos: ((Int, URL?) -> Void)?
+    /// The frame time analysis last ran at, for things that happen between frames.
+    @ObservationIgnored private var lastAnalyzedTime: TimeInterval = 0
+    /// `MC_LOCK_TEST_NO_FACE`: the self-test lock ignores the owner's face, so what happens to someone else can be
+    /// checked with the owner sitting there.
+    @ObservationIgnored private var faceUnlockSuspended = false
+    /// The macOS lock screen is up, or another user's session is: this app's lock stays out of its way.
+    @ObservationIgnored private var systemScreenLocked = false
 
     private(set) var latestFrame: PoseFrame?
     private(set) var latestReading: GestureReading?
@@ -77,6 +118,8 @@ final class Pipeline {
     private(set) var modeProgress = 0.0
     /// One index tap has landed; another switches to pointer mode.
     private(set) var awaitingSecondTap = false
+    /// Gesture mode's palm has held still: sweeping it sideways now switches desktops.
+    private(set) var swipeArmed = false
     /// Someone is in front of the camera.
     private(set) var personPresent = false
     private(set) var accessibilityTrusted = AccessibilityPermission.isTrusted
@@ -91,6 +134,30 @@ final class Pipeline {
     private(set) var savedFileCount = 0
     private(set) var lastSavedURL: URL?
     private(set) var lastError: String?
+    /// The dark screen is locked: input is held back until the owner's face or Touch ID / the password lets it go.
+    private(set) var isLocked = false
+    /// The owner's enrolled face; nil until enrolled.
+    private(set) var faceTemplate: FaceTemplate?
+    private(set) var enrollmentStatus = EnrollmentStatus.off
+    private(set) var enrollmentProgress = 0.0
+    private(set) var enrollmentHint: String?
+    /// The latest face check's similarity to the owner while locked, for the debug preview.
+    private(set) var lastFaceSimilarity: Double?
+    /// Photos saved of people trying to use the Mac while it was locked.
+    private(set) var intruderPhotoCount = 0
+
+    /// The menu's opt-in. Locking also needs an enrolled face, the Accessibility permission and a way to authenticate.
+    var lockEnabled = UserDefaults.standard.bool(forKey: Pipeline.lockKey) {
+        didSet {
+            UserDefaults.standard.set(lockEnabled, forKey: Self.lockKey)
+            if !lockEnabled {
+                endLock("🔓 화면 잠금 끔")
+            }
+        }
+    }
+
+    /// The face model is in the app, so face unlock and enrollment can work.
+    var faceUnlockAvailable: Bool { faceSource.isAvailable }
 
     var preferredHand: Chirality = .right
 
@@ -122,11 +189,41 @@ final class Pipeline {
 
     init() {
         let handSource = handSource
+        let faceSource = faceSource
+        let snapshots = snapshots
         camera.onFrame = { buffer, time in
             handSource.process(buffer, at: time)
+            faceSource.process(buffer, at: time)
+            snapshots.process(buffer, at: time)
         }
+        snapshots.setHandler { [weak self] tag, data in
+            Task { @MainActor in self?.receivePhoto(data, attempt: tag) }
+        }
+        intruderPhotoCount = (try? FileManager.default.contentsOfDirectory(atPath: Self.intruderPhotosDirectory.path))?
+            .filter { $0.hasSuffix(".jpg") }.count ?? 0
         handSource.setHandler { [weak self] output in
             Task { @MainActor in self?.receive(output) }
+        }
+        faceSource.setHandler { [weak self] output in
+            Task { @MainActor in self?.receiveFace(output) }
+        }
+        if let data = try? Data(contentsOf: Self.faceTemplateURL) {
+            // Enrollments from before bad frames were dropped can still hold one.
+            faceTemplate = (try? JSONDecoder().decode(FaceTemplate.self, from: data))?
+                .droppingOutliers(below: FaceEnrollment.Settings().outlierBelow)
+        }
+        screenLock.onAuthenticated = { [weak self] in
+            self?.endLock("🔓 Touch ID·암호로 잠금 해제", byOwner: true)
+        }
+        screenLock.onAskingChanged = { [weak self] asking in
+            self?.screen.showUnlockDialog(asking)
+            self?.watchIntruders(asking ? .dialogShown : .dialogClosedStillLocked)
+        }
+        screenLock.onHeldBack = { [weak self] in
+            self?.watchIntruders(.inputHeldBack)
+        }
+        screenLock.onUnusable = { [weak self] why in
+            self?.endLock("⚠️ \(why) · 잠금 해제")
         }
         pointer.settings.screenAspect = MouseEventPoster.screenAspect
         // A box calibrated by pointing at the corners outlives the launch; without one the box fits the hand.
@@ -136,17 +233,33 @@ final class Pipeline {
 
         // A button that a crashed or killed instance left down would otherwise stay down.
         MouseEventPoster.postDefensiveRelease()
-        // Never leave a button held across quitting or sleeping.
+        // Never leave a button held across quitting or sleeping, nor the screen dimmed after quitting.
         observers.append(NotificationCenter.default.addObserver(
             forName: NSApplication.willTerminateNotification, object: nil, queue: .main
         ) { [weak self] _ in
-            MainActor.assumeIsolated { self?.releasePointer() }
+            MainActor.assumeIsolated {
+                self?.releasePointer()
+                self?.screenLock.unlock()
+                self?.screen.release()
+            }
         })
         observers.append(NSWorkspace.shared.notificationCenter.addObserver(
             forName: NSWorkspace.willSleepNotification, object: nil, queue: .main
         ) { [weak self] _ in
             MainActor.assumeIsolated { self?.releasePointer() }
         })
+        // The macOS lock screen or another user's session has to be seen and typed into: never dark or held back.
+        let systemLockNotices: [(NotificationCenter, Notification.Name, Bool)] = [
+            (DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsLocked"), true),
+            (DistributedNotificationCenter.default(), Notification.Name("com.apple.screenIsUnlocked"), false),
+            (NSWorkspace.shared.notificationCenter, NSWorkspace.sessionDidResignActiveNotification, true),
+            (NSWorkspace.shared.notificationCenter, NSWorkspace.sessionDidBecomeActiveNotification, false),
+        ]
+        for (center, name, locked) in systemLockNotices {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.systemLockChanged(locked) }
+            })
+        }
     }
 
     var frameAspect: Double { latestFrame?.imageAspect ?? 16.0 / 9.0 }
@@ -163,7 +276,7 @@ final class Pipeline {
             }
             devices = CameraService.availableDevices()
             activity = ProcessInfo.processInfo.beginActivity(
-                options: .userInitiatedAllowingIdleSystemSleep,
+                options: [.userInitiated, .idleDisplaySleepDisabled],
                 reason: "Tracking hand gestures from the camera"
             )
             camera.start(deviceID: selectedDeviceID)
@@ -173,12 +286,16 @@ final class Pipeline {
     func stop() {
         isRunning = false
         releasePointer()
+        endLock(nil)
+        cancelEnrollment()
         modeController = ModeController()
         mode = modeController.mode
         modeProgress = 0
         awaitingSecondTap = false
         personPresent = false
         lastPersonTime = -.infinity
+        screen.release()
+        screenPresence = ScreenPresence()
         actionEvaluator.reset()
         pendingAction = nil
         camera.stop()
@@ -235,6 +352,54 @@ final class Pipeline {
         switchMode(to: newMode)
     }
 
+    /// Starts (or restarts) collecting the owner's face; the enrollment window shows how far along it is.
+    func startEnrollment() {
+        guard !isLocked else { return }
+        enrollment = FaceEnrollment()
+        enrollmentStatus = .collecting
+        enrollmentProgress = 0
+        enrollmentHint = nil
+        updateFaceChecks()
+        logMotion("🙂 얼굴 등록 시작")
+    }
+
+    /// The window closed: stop collecting. A face enrolled before stays.
+    func cancelEnrollment() {
+        guard enrollment != nil || enrollmentStatus != .off else { return }
+        enrollment = nil
+        enrollmentStatus = .off
+        enrollmentProgress = 0
+        enrollmentHint = nil
+        updateFaceChecks()
+    }
+
+    /// `MC_LOCK_TEST`: locks now, whoever is there, and lets go after `seconds` whatever happens, so the tap and the
+    /// Touch ID / password dialog can be checked without the room emptying and without risking a lockout.
+    func testLock(for seconds: TimeInterval) {
+        Self.logger.notice(
+            """
+            Lock self-test for \(seconds)s: accessibility \(self.accessibilityTrusted, privacy: .public), \
+            authentication \(ScreenLock.canAuthenticate, privacy: .public), face \(self.faceTemplate != nil, privacy: .public)
+            """
+        )
+        faceUnlockSuspended = ProcessInfo.processInfo.environment["MC_LOCK_TEST_NO_FACE"] != nil
+        guard ScreenLock.canAuthenticate, engageLock() else {
+            Self.logger.error("Lock self-test couldn't lock")
+            return
+        }
+        screen.dim(wakesOnInput: false)
+        logMotion("🔒 잠금 테스트")
+        Task { [weak self] in
+            try? await Task.sleep(for: .seconds(seconds))
+            self?.endLock("🔓 잠금 테스트 끝")
+        }
+    }
+
+    func revealIntruderPhotos() {
+        try? FileManager.default.createDirectory(at: Self.intruderPhotosDirectory, withIntermediateDirectories: true)
+        NSWorkspace.shared.open(Self.intruderPhotosDirectory)
+    }
+
     func openAccessibilitySettings() {
         AccessibilityPermission.openSettings()
     }
@@ -286,6 +451,161 @@ final class Pipeline {
         record(frame)
     }
 
+    /// Enrollment collects faces; a locked screen compares them with the owner's.
+    private func receiveFace(_ output: FaceSource.Output) {
+        guard isRunning else { return }
+        if var current = enrollment {
+            guard let embedding = output.embedding else {
+                enrollmentHint = "얼굴이 보이지 않아요"
+                return
+            }
+            switch current.add(embedding, faceHeight: output.faceHeight, at: output.time) {
+            case .tooSmall: enrollmentHint = "조금 더 가까이 와 주세요"
+            case .inconsistent: enrollmentHint = "화면에 한 사람만 있어야 해요"
+            case .added, .tooSoon, .complete: enrollmentHint = "좋아요 · 고개를 살짝 좌우로 돌려 보세요"
+            }
+            enrollment = current
+            enrollmentProgress = current.progress
+            if let template = current.template {
+                finishEnrollment(template)
+            }
+            return
+        }
+        guard isLocked, let faceTemplate else { return }
+        let similarity = output.embedding.map { faceTemplate.similarity(to: $0) }
+        lastFaceSimilarity = similarity
+        watchIntruders(.faceChecked(similarity: similarity))
+        if let similarity {
+            Self.logger.notice("Face similarity \(similarity, format: .fixed(precision: 3)) (\(output.milliseconds, format: .fixed(precision: 0)) ms)")
+        }
+        if !faceUnlockSuspended, faceVerification.update(similarity: similarity, at: output.time) {
+            endLock("🔓 얼굴 확인 · 잠금 해제", byOwner: true)
+        }
+    }
+
+    private func finishEnrollment(_ template: FaceTemplate) {
+        do {
+            try FileManager.default.createDirectory(
+                at: Self.faceTemplateURL.deletingLastPathComponent(), withIntermediateDirectories: true
+            )
+            try JSONEncoder().encode(template).write(to: Self.faceTemplateURL, options: .atomic)
+        } catch {
+            Self.logger.error("Saving the enrolled face failed: \(String(describing: error), privacy: .public)")
+            enrollmentHint = "저장하지 못했어요: \(error.localizedDescription)"
+            enrollment = FaceEnrollment()
+            enrollmentProgress = 0
+            return
+        }
+        let selfSimilarity = template.embeddings.map { template.similarity(to: $0) }
+        Self.logger.notice(
+            "Face enrolled from \(template.embeddings.count) samples, similarity to the template \(selfSimilarity.min() ?? 0, format: .fixed(precision: 3))...\(selfSimilarity.max() ?? 0, format: .fixed(precision: 3))"
+        )
+        faceTemplate = template
+        enrollment = nil
+        enrollmentStatus = .saved
+        enrollmentHint = nil
+        updateFaceChecks()
+        lockEnabled = true
+        logMotion("🙂 얼굴 등록 완료 · 화면 잠금 켜짐")
+    }
+
+    /// Face checks run only while something needs them.
+    private func updateFaceChecks() {
+        faceSource.wanted = isRunning && (enrollment != nil || (isLocked && faceTemplate != nil))
+    }
+
+    /// Locks input and parks recognition. False, with nothing locked, when locking can't work right now.
+    private func engageLock() -> Bool {
+        guard !isLocked else { return true }
+        guard !systemScreenLocked, screenLock.lock() else { return false }
+        isLocked = true
+        faceVerification.reset()
+        lastFaceSimilarity = nil
+        cancelCalibration()
+        cancelEnrollment()
+        releasePointer()
+        if let newMode = modeController.set(.idle, because: .screenLocked) {
+            switchMode(to: newMode)
+        }
+        updateFaceChecks()
+        return true
+    }
+
+    /// Lets input go and the screen come back, with the absence clock starting over. `text` goes to the motion log;
+    /// `byOwner` is true when the owner's face, Touch ID or password did it.
+    private func endLock(_ text: String?, byOwner: Bool = false) {
+        guard isLocked else { return }
+        watchIntruders(.unlocked(byOwner: byOwner))
+        faceUnlockSuspended = false
+        isLocked = false
+        screenLock.unlock()
+        _ = screenPresence.unlock(at: lastAnalyzedTime)
+        screen.wake()
+        updateFaceChecks()
+        if let text {
+            logMotion(text)
+        }
+        if !unseenIntruderPhotos.isEmpty {
+            onIntruderPhotos?(unseenIntruderPhotos.count, unseenIntruderPhotos.last)
+            unseenIntruderPhotos = []
+        }
+    }
+
+    /// Takes, keeps or throws away photos of someone trying to use the locked Mac. All on one clock, since input and
+    /// face checks don't share frame times.
+    private func watchIntruders(_ event: IntruderWatch.Event) {
+        let wasWatching = intruderWatch.isWatching
+        for command in intruderWatch.update(event, at: ProcessInfo.processInfo.systemUptime) {
+            switch command {
+            case .takePhoto:
+                if !wasWatching {
+                    attempt += 1
+                    attemptPhotos = []
+                }
+                snapshots.request(tag: attempt)
+            case .keepPhotos:
+                keptAttempts.insert(attempt)
+                Self.logger.notice("Keeping \(self.attemptPhotos.count) photos of attempt \(self.attempt) on the locked screen")
+                attemptPhotos.forEach(saveIntruderPhoto)
+                attemptPhotos = []
+            case .discardPhotos:
+                Self.logger.notice("The owner got in: \(self.attemptPhotos.count) photos of attempt \(self.attempt) thrown away")
+                attemptPhotos = []
+            }
+        }
+    }
+
+    private func receivePhoto(_ data: Data, attempt tag: Int) {
+        if keptAttempts.contains(tag) {
+            saveIntruderPhoto(data)
+        } else if tag == attempt, intruderWatch.isWatching {
+            attemptPhotos.append(data)
+        }
+    }
+
+    private func saveIntruderPhoto(_ data: Data) {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "yyyyMMdd-HHmmss-SSS"
+        let url = Self.intruderPhotosDirectory.appending(path: formatter.string(from: .now) + ".jpg")
+        do {
+            try FileManager.default.createDirectory(at: Self.intruderPhotosDirectory, withIntermediateDirectories: true)
+            try data.write(to: url)
+            intruderPhotoCount += 1
+            unseenIntruderPhotos.append(url)
+            Self.logger.notice("Saved a photo of an attempt on the locked screen: \(url.lastPathComponent, privacy: .public)")
+        } catch {
+            Self.logger.error("Saving an intruder photo failed: \(String(describing: error), privacy: .public)")
+        }
+    }
+
+    private func systemLockChanged(_ locked: Bool) {
+        systemScreenLocked = locked
+        Self.logger.notice("macOS screen \(locked ? "locked" : "unlocked", privacy: .public)")
+        if locked {
+            endLock("macOS 잠금 화면")
+        }
+    }
+
     private func trackVisionError(_ error: String?, at time: TimeInterval) {
         if let error {
             visionError = error
@@ -313,6 +633,30 @@ final class Pipeline {
         if present != personPresent {
             personPresent = present
             Self.logger.notice("Person \(present ? "present" : "absent", privacy: .public)")
+        }
+
+        lastAnalyzedTime = time
+
+        // A locked screen stays dark whoever shows up or touches anything; only the owner's face or Touch ID / the
+        // password (receiveFace, ScreenLock) end it. Nothing else is recognized meanwhile.
+        guard !isLocked else {
+            watchIntruders(.tick)
+            return
+        }
+
+        // Whatever the mode, calibration included: dark once nobody has been there a while. Typing or using the mouse
+        // counts as being there too, so someone the camera misses isn't left in front of a black screen.
+        let screenPresent = present || ScreenKeeper.secondsSinceInput < 2
+        let screenChange = screenPresence.update(personPresent: screenPresent, at: time)
+        if screenPresence.state == .dimmed {
+            if screenChange != nil {
+                let locked = lockEnabled && faceTemplate != nil && faceSource.isAvailable && accessibilityTrusted
+                    && ScreenLock.canAuthenticate && engageLock()
+                screen.dim(wakesOnInput: !locked)
+                logMotion(locked ? "🔒 사람 없음 · 화면 잠금" : "🌙 사람 없음 · 화면 어둡게")
+            }
+        } else {
+            screen.stayAwake(personPresent: present, at: time)
         }
 
         if calibration != nil {
@@ -346,6 +690,7 @@ final class Pipeline {
                         imageAspect: reading.imageAspect,
                         pinching: reading.isPinching,
                         scrollPose: reading.pose == .victory,
+                        zoomPose: reading.pose == .threeFingers,
                         tap: reading.tap,
                         holdStill: reading.isTapDipping,
                         fist: reading.isFist,
@@ -356,8 +701,13 @@ final class Pipeline {
             let commands = pointer.update(sample, at: time, systemCursor: MouseEventPoster.cursorFraction())
             mouse.apply(commands)
             logClicks(commands)
+            // Zoom steps come from the analyzer, the same as in gesture mode.
+            if let zoomStep = reading?.zoomStep, zoomStep != 0 {
+                dispatch([.keyCombo(zoomStep > 0 ? .zoomIn : .zoomOut)])
+            }
             let status = PointerStatus(
                 pressed: pointer.isPressed, dragging: pointer.isDragging, scrolling: pointer.isScrolling,
+                zooming: pointer.isZooming,
                 engaged: reading?.isIndexBent == true
             )
             if status != pointerStatus {
@@ -365,6 +715,9 @@ final class Pipeline {
             }
 
         case .normal:
+            if analyzer.isSwipeArmed != swipeArmed {
+                swipeArmed = analyzer.isSwipeArmed
+            }
             let actions = actionEvaluator.update(reading, swipe: analyzer.lastSwipe, at: time)
             let pending = actionEvaluator.pending(at: time).map {
                 PendingAction(pose: $0.pose, action: $0.action, progress: $0.progress)
@@ -443,6 +796,7 @@ final class Pipeline {
         activePinchTotals = nil
         actionEvaluator.reset()
         pendingAction = nil
+        swipeArmed = false
         mode = newMode
         let reason = modeController.lastChangeReason
         Self.logger.notice("Mode \(newMode.rawValue, privacy: .public) (\(reason?.rawValue ?? "-", privacy: .public))")

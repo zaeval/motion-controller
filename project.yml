@@ -39,7 +39,7 @@ targets:
         CFBundleIconFile: AppIcon
         CFBundleVersion: "1"
         LSUIElement: true
-        NSCameraUsageDescription: "손 제스처를 인식하려고 카메라를 사용합니다. 영상은 저장하거나 전송하지 않습니다."
+        NSCameraUsageDescription: "손 제스처와 얼굴 잠금에 카메라를 사용합니다. 영상은 전송하지 않고, 잠긴 화면에서 누군가 입력을 시도했을 때만 사진을 이 Mac에 저장합니다."
     entitlements:
       path: App/MotionController.entitlements
       properties:

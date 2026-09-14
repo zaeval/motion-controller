@@ -90,12 +90,18 @@ public enum PointerCommand: Equatable, Sendable {
 /// - A pinch presses where the cursor is: moving while pinched drags, a quick pinch clicks, holding still presses.
 ///   The button only goes down once the pinch proves to be one, so a fist closing through a pinch sends nothing.
 /// - The V sign parks the cursor and turns vertical hand travel into scrolling.
+/// - Three fingers park it too, while `ZoomControl` in the analyzer turns their travel into zoom steps.
 public struct PointerController: Sendable {
     public enum Mapping: String, Codable, Sendable {
         /// The interaction box maps onto the screen: the cursor is wherever the hand is.
         case absolute
         /// Like a trackpad: hand movement nudges the cursor from where it is, and faster hands move it further.
         case relative
+    }
+
+    /// A pose that parks the cursor and turns vertical hand travel into something else.
+    public enum Travel: Sendable, Equatable {
+        case scroll, zoom
     }
 
     public struct Settings: Codable, Equatable, Sendable {
@@ -136,7 +142,7 @@ public struct PointerController: Sendable {
         /// A hand missing this long lets go of the button; shorter dropouts keep a drag alive. Recorded fast-motion
         /// dropouts last up to 0.4 s.
         public var trackingLossGrace: TimeInterval = 0.5
-        /// Consecutive frames needed to start or stop scrolling.
+        /// Consecutive frames needed to start or stop scrolling or zooming.
         public var scrollDebounceFrames = 3
         public var invertScroll = false
 
@@ -159,6 +165,8 @@ public struct PointerController: Sendable {
         public var imageAspect: Double
         public var pinching: Bool
         public var scrollPose: Bool
+        /// Three fingers: vertical travel zooms.
+        public var zoomPose: Bool
         /// An index tap that completed on this frame.
         public var tap: FingerTap?
         /// A finger is bending for a tap: the cursor holds still.
@@ -169,13 +177,14 @@ public struct PointerController: Sendable {
 
         public init(
             point: Vec2, handScale: Double, imageAspect: Double = 1, pinching: Bool = false, scrollPose: Bool = false,
-            tap: FingerTap? = nil, holdStill: Bool = false, fist: Bool = false, engaged: Bool = true
+            zoomPose: Bool = false, tap: FingerTap? = nil, holdStill: Bool = false, fist: Bool = false, engaged: Bool = true
         ) {
             self.point = point
             self.handScale = handScale
             self.imageAspect = imageAspect
             self.pinching = pinching
             self.scrollPose = scrollPose
+            self.zoomPose = zoomPose
             self.tap = tap
             self.holdStill = holdStill
             self.fist = fist
@@ -199,7 +208,10 @@ public struct PointerController: Sendable {
     /// The last position sent to the screen, or where the cursor was when the hand was zeroed.
     public private(set) var cursor: Vec2?
     public private(set) var box: InteractionBox
-    public private(set) var isScrolling = false
+    /// What vertical hand travel is doing instead of moving the cursor, if anything.
+    public private(set) var travel: Travel?
+    public var isScrolling: Bool { travel == .scroll }
+    public var isZooming: Bool { travel == .zoom }
     /// A pinch is in progress, whether or not the button has gone down yet.
     public var isPressed: Bool { press != nil }
     /// The button is down.
@@ -216,8 +228,8 @@ public struct PointerController: Sendable {
     private var wasPinching: Bool?
     /// A tap already clicked for the pinch being held.
     private var pinchSpent = false
-    private var scrollFrames = 0
-    private var scrollAnchor: Double?
+    private var travelFrames = 0
+    private var travelAnchor: Double?
     private var smoothedScale: Double?
     private var lastSampleTime: TimeInterval?
     private var lastClick: (time: TimeInterval, at: Vec2, clickCount: Int)?
@@ -253,27 +265,27 @@ public struct PointerController: Sendable {
             target = cursor
         }
 
-        let wasScrolling = isScrolling
-        updateScrollPose(sample)
+        let wasTravelling = travel != nil
+        updateTravelPose(sample)
         let point = filter.filter(sample.point, at: time)
         let mapped = box.screenPoint(forCamera: point)
 
-        if isScrolling {
-            let raw = box.screenPoint(forCamera: point)
-            if let anchor = scrollAnchor {
-                let travel = raw.y - anchor
-                if abs(travel) >= settings.jitterDeadband {
-                    scrollAnchor = raw.y
+        if let travel {
+            // A zoom only parks the cursor here; its steps come from `ZoomControl`.
+            if travel == .scroll, let anchor = travelAnchor {
+                let distance = mapped.y - anchor
+                if abs(distance) >= settings.jitterDeadband {
+                    travelAnchor = mapped.y
                     // A rising hand shrinks screen y, which scrolls up.
-                    commands.append(.scroll(settings.invertScroll ? travel : -travel))
+                    commands.append(.scroll(settings.invertScroll ? distance : -distance))
                 }
             } else {
-                scrollAnchor = raw.y
+                travelAnchor = mapped.y
             }
             reference = nil
-        } else if wasScrolling || (press == nil && (sample.holdStill || sample.fist
+        } else if wasTravelling || (press == nil && (sample.holdStill || sample.fist
             || (settings.moveOnlyWhileBent && !sample.engaged))) {
-            // A scroll just ended, a finger is bending for a tap, or the index isn't bent toward the camera: the
+            // A scroll or zoom just ended, a finger is bending for a tap, or the index isn't bent toward the camera: the
             // cursor parks where it is. Relative mapping also zeroes the hand again once it moves on.
             reference = nil
         } else {
@@ -311,9 +323,9 @@ public struct PointerController: Sendable {
     private mutating func forgetHand() {
         filter.reset()
         wasPinching = nil
-        isScrolling = false
-        scrollFrames = 0
-        scrollAnchor = nil
+        travel = nil
+        travelFrames = 0
+        travelAnchor = nil
         smoothedScale = nil
         lastSampleTime = nil
         reference = nil
@@ -371,7 +383,7 @@ public struct PointerController: Sendable {
         wasPinching = sample.pinching
         if !sample.pinching { pinchSpent = false }
 
-        if started, press == nil, !isScrolling, !pinchSpent, let at = cursor {
+        if started, press == nil, travel == nil, !pinchSpent, let at = cursor {
             press = Press(
                 downAt: at, downTime: time, clickCount: chainedClickCount(at: at, time: time), offset: at - mapped
             )
@@ -429,17 +441,18 @@ public struct PointerController: Sendable {
         return lastClick.clickCount + 1
     }
 
-    private mutating func updateScrollPose(_ sample: Sample) {
-        let wantsScroll = sample.scrollPose && !sample.pinching && press == nil
-        guard wantsScroll != isScrolling else {
-            scrollFrames = 0
+    private mutating func updateTravelPose(_ sample: Sample) {
+        let free = !sample.pinching && press == nil
+        let wanted: Travel? = !free ? nil : sample.scrollPose ? .scroll : sample.zoomPose ? .zoom : nil
+        guard wanted != travel else {
+            travelFrames = 0
             return
         }
-        scrollFrames += 1
-        guard scrollFrames >= settings.scrollDebounceFrames else { return }
-        scrollFrames = 0
-        isScrolling = wantsScroll
-        scrollAnchor = nil
+        travelFrames += 1
+        guard travelFrames >= settings.scrollDebounceFrames else { return }
+        travelFrames = 0
+        travel = wanted
+        travelAnchor = nil
     }
 
     private static func clamped(_ point: Vec2) -> Vec2 {
@@ -454,8 +467,8 @@ public struct PointerController: Sendable {
         guard scale > 0 else { return }
         let smoothed = smoothedScale.map { $0 + (scale - $0) * settings.handScaleSmoothing } ?? scale
         smoothedScale = smoothed
-        // Never under a held button or a scroll: shifting the mapping would scroll by itself.
-        guard press == nil, !isScrolling else { return }
+        // Never under a held button, a scroll or a zoom: shifting the mapping would scroll or zoom by itself.
+        guard press == nil, travel == nil else { return }
         box = box.moved(toward: .fitted(toHandScale: smoothed), by: settings.boxDrift)
     }
 }

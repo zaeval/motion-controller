@@ -102,6 +102,7 @@ struct OverlayView: View {
         if let flash = pipeline.flash { return flash }
         guard pipeline.latestReading != nil else { return "손 없음" }
         if status.scrolling { return "✌️ 스크롤" }
+        if status.zooming { return "🤟 ↑ 확대 · ↓ 축소" }
         if pipeline.modeProgress > 0 { return "✊ 제스처 모드로 전환 \(progressBar(pipeline.modeProgress))" }
         if status.engaged { return "👉 이동 중 · 검지 펴면 멈춤" }
         return "👉 굽혀 이동 · ☝️ 톡 클릭 · ✌️ 톡 우클릭 · 🤏 드래그 · ✊ 끝"
@@ -115,9 +116,17 @@ struct OverlayView: View {
             return reading.pinchTotal == 0 ? axis.displayName : "\(axis.displayName) \(reading.pinchTotal.signedText)"
         }
         if let flash = pipeline.flash { return flash }
+        if let pending = pipeline.pendingAction, pending.progress >= 1 {
+            return "\(pending.action.displayName) · 손을 내리면 실행"
+        }
+        if pipeline.swipeArmed {
+            let hold = pipeline.pendingAction.map { " · 계속 들면 \($0.action.displayName) \(progressBar($0.progress))" } ?? ""
+            return "🖐 ↔ 옆으로 쓸면 데스크톱 전환" + hold
+        }
         if let pending = pipeline.pendingAction {
             return "\(pending.pose.displayName) → \(pending.action.displayName) \(progressBar(pending.progress))"
         }
+        if reading.pose == .threeFingers { return "🤟 ↑ 확대 · ↓ 축소" }
         if pipeline.awaitingSecondTap { return "☝️ 한 번 더 톡 → 커서 모드" }
         return reading.pose?.displayName ?? "…"
     }

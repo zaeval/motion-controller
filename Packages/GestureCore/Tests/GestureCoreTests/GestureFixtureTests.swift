@@ -117,7 +117,7 @@ struct GestureFixtureTests {
         }
     }
 
-    @Test func onlyThePalmFoldedAndPulledBackParks() throws {
+    @Test func onlyAFistPulledBackParks() throws {
         for recording in try SwipeFixtureTests.recordings(containing: "") {
             let parks = Self.analyze(recording).filter { $0.reading?.idleGesture == true }.count
             #expect(parks == (recording.name.contains("IDLE") ? 1 : 0), "\(recording.name) parked \(parks) times")
@@ -155,12 +155,60 @@ struct GestureFixtureTests {
             if Self.handTurnedInsteadOfTravelling.contains(recording.name) {
                 #expect(!commands.contains { $0 == .desktop(.next) }, "\(label)")
             } else if recording.name.contains("swipe-left") {
-                #expect(!commands.isEmpty && commands.allSatisfy { $0 == .desktop(.previous) }, "\(label)")
+                // Recorded before swipes needed a held palm, so they may rightly fire nothing (SwipeFixtureTests).
+                #expect(commands.allSatisfy { $0 == .desktop(.previous) }, "\(label)")
             } else if recording.name.contains("swipe-right") {
-                #expect(!commands.isEmpty && commands.allSatisfy { $0 == .desktop(.next) }, "\(label)")
+                #expect(commands.allSatisfy { $0 == .desktop(.next) }, "\(label)")
             } else {
                 #expect(commands.isEmpty, "\(label)")
             }
+        }
+    }
+
+    /// The user's own park held the palm past play/pause's hold before folding it, and paused their music (logged
+    /// 2026-09-14). Each recorded park, replayed with its first palm frame held 1.5 s longer, must still park and never
+    /// play or pause anything.
+    @Test func aParkThatHoldsThePalmLongerStillNeverPlaysOrPauses() throws {
+        let recordings = try SwipeFixtureTests.recordings(containing: "IDLE")
+        #expect(!recordings.isEmpty)
+        for recording in recordings {
+            let frames = recording.frames
+            let firstPalm = try #require(
+                Self.analyze(recording).firstIndex { $0.reading?.pose == .openPalm }, "\(recording.name)"
+            )
+            let stretch = 1.5
+            var timeline: [(frame: PoseFrame, time: TimeInterval)] = frames[..<firstPalm].map { ($0, $0.timestamp) }
+            for step in 0..<Int(stretch * 30) {
+                timeline.append((frames[firstPalm], frames[firstPalm].timestamp + Double(step) / 30))
+            }
+            timeline += frames[firstPalm...].map { ($0, $0.timestamp + stretch) }
+
+            var analyzer = GestureAnalyzer()
+            var evaluator = ActionEvaluator()
+            var modes = ModeController(mode: .normal)
+            var commands: [GestureAction] = []
+            var holdCompleted = false
+            // Actions only in gesture mode, and not on the frame the mode changes, as in `Pipeline`.
+            func feed(_ hand: HandFrame?, personPresent: Bool, at time: TimeInterval) {
+                let reading = analyzer.update(hand: hand, at: time)
+                let changed = modes.update(reading, personPresent: personPresent, at: time)
+                guard changed == nil, modes.mode == .normal else { return }
+                commands += evaluator.update(reading, swipe: analyzer.lastSwipe, at: time)
+                holdCompleted = holdCompleted || evaluator.pending(at: time)?.progress == 1
+            }
+            for (frame, time) in timeline {
+                feed(SwipeFixtureTests.trackedHand(in: frame), personPresent: frame.hasPerson, at: time)
+            }
+            let last = timeline.last?.time ?? 0
+            for step in 1...45 {
+                feed(nil, personPresent: false, at: last + Double(step) / 30)
+            }
+            // Otherwise the stretch proves nothing: the palm has to have been held long enough to play or pause.
+            #expect(holdCompleted, "\(recording.name)")
+            #expect(!commands.contains(.media(.playPause)), "\(recording.name): \(commands)")
+            // The palm held that long arms a swipe too; folding it to park must not switch desktops.
+            #expect(!commands.contains { if case .desktop = $0 { true } else { false } }, "\(recording.name): \(commands)")
+            #expect(modes.mode == .idle, "\(recording.name)")
         }
     }
 

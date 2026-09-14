@@ -4,187 +4,132 @@ import Testing
 
 struct SwipeDetectorTests {
     private static let frame = 1.0 / 30
-    /// A swipe fires once its run has ended and its grace has run out, so every test has to keep the camera running
-    /// past the stroke the way the app does.
-    private static let tail: TimeInterval = 0.7
 
-    /// Moves the anchor linearly, then holds it where it stopped for `tail`, and returns every swipe that fired.
-    /// Pass `tail: 0` to chain another motion straight on instead.
-    private func sweep(
+    /// Feeds frames from `t0` for `seconds`, the anchor moving linearly from `start` to `end`, and returns every swipe.
+    private func feed(
         _ detector: inout SwipeDetector,
         from start: Vec2,
-        to end: Vec2,
+        to end: Vec2? = nil,
         seconds: TimeInterval,
-        startingAt t0: TimeInterval,
-        flat: (Int) -> Bool = { _ in true },
+        at t0: TimeInterval,
+        facing: Bool? = true,
+        flat: Bool = true,
+        fist: Bool = false,
         pinching: Bool = false,
-        dropFrames: Set<Int> = [],
-        tail: TimeInterval = SwipeDetectorTests.tail
+        dropFrames: Set<Int> = []
     ) -> [SwipeDirection] {
-        let frames = Int((seconds / Self.frame).rounded())
-        let held = Int((tail / Self.frame).rounded())
-        var fired: [SwipeDirection] = []
-        for index in 0...(frames + held) {
-            let progress = Double(min(index, frames)) / Double(frames)
-            let time = t0 + Double(index) * Self.frame
+        let target = end ?? start
+        let frames = max(1, Int((seconds / Self.frame).rounded()))
+        return (0..<frames).compactMap { index in
+            let progress = Double(index + 1) / Double(frames)
             let sample = dropFrames.contains(index) ? nil : SwipeDetector.Sample(
-                anchor: start + (end - start) * progress,
-                flatHand: flat(index),
-                pinching: pinching,
-                imageAspect: 1
+                anchor: start + (target - start) * progress, flatHand: flat, pinching: pinching, fist: fist,
+                palmFacesCamera: facing, imageAspect: 1
             )
-            if let direction = detector.update(sample, at: time) { fired.append(direction) }
+            return detector.update(sample, at: t0 + Double(index) * Self.frame)
         }
-        return fired
     }
 
-    @Test func handMovingTowardImageRightIsTheUsersLeft() {
-        var detector = SwipeDetector()
-        #expect(sweep(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.6, 0.6), seconds: 0.3, startingAt: 0) == [.left])
+    @Test func aPalmHeldStillThenSweptSwitches() {
+        var toLeft = SwipeDetector()
+        #expect(feed(&toLeft, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0).isEmpty)
+        #expect(toLeft.isArmed)
+        // Image x grows toward the user's left.
+        #expect(feed(&toLeft, from: Vec2(0.5, 0.6), to: Vec2(0.7, 0.6), seconds: 0.25, at: 0.4) == [.left])
+        #expect(!toLeft.isArmed)
+
+        var toRight = SwipeDetector()
+        _ = feed(&toRight, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
+        #expect(feed(&toRight, from: Vec2(0.5, 0.6), to: Vec2(0.28, 0.55), seconds: 0.25, at: 0.4) == [.right])
     }
 
-    @Test func swipeFromAStillHandFires() {
+    @Test func aHandThatNeverStoodStillNeverSwitches() {
         var detector = SwipeDetector()
-        #expect(sweep(&detector, from: Vec2(0.3, 0.45), to: Vec2(0.3, 0.45), seconds: 0.8, startingAt: 0, tail: 0).isEmpty)
-        #expect(sweep(&detector, from: Vec2(0.3, 0.45), to: Vec2(0.4, 0.45), seconds: 0.2, startingAt: 0.8 + Self.frame) == [.left])
+        #expect(feed(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.7, 0.6), seconds: 0.3, at: 0).isEmpty)
+        // Too short a pause.
+        _ = feed(&detector, from: Vec2(0.7, 0.6), seconds: 0.2, at: 2)
+        #expect(!detector.isArmed)
+        #expect(feed(&detector, from: Vec2(0.7, 0.6), to: Vec2(0.4, 0.6), seconds: 0.3, at: 2.2).isEmpty)
     }
 
-    @Test func swipeArcingDownwardFires() {
-        var detector = SwipeDetector()
-        // Toward the user's right while dropping, the shape recorded swipes have.
-        #expect(sweep(&detector, from: Vec2(0.40, 0.45), to: Vec2(0.28, 0.38), seconds: 0.25, startingAt: 0) == [.right])
+    @Test func theBackOfTheHandAFistOrAPinchDoesNotArm() {
+        for (facing, flat) in [(false, true), (nil, true), (true, false)] as [(Bool?, Bool)] {
+            var detector = SwipeDetector()
+            _ = feed(&detector, from: Vec2(0.5, 0.6), seconds: 0.5, at: 0, facing: facing, flat: flat)
+            #expect(!detector.isArmed)
+            #expect(feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.75, 0.6), seconds: 0.25, at: 0.5).isEmpty)
+        }
+        // Held right, then folded into a fist and pulled away: the parking gesture.
+        var parking = SwipeDetector()
+        _ = feed(&parking, from: Vec2(0.5, 0.6), seconds: 0.5, at: 0)
+        #expect(feed(&parking, from: Vec2(0.5, 0.6), to: Vec2(0.75, 0.6), seconds: 0.25, at: 0.5, flat: false, fist: true).isEmpty)
+        // Held right, then pinched into a volume or brightness drag.
+        var dragging = SwipeDetector()
+        _ = feed(&dragging, from: Vec2(0.5, 0.6), seconds: 0.5, at: 0)
+        #expect(feed(&dragging, from: Vec2(0.5, 0.6), to: Vec2(0.75, 0.6), seconds: 0.25, at: 0.5, flat: false, pinching: true).isEmpty)
     }
 
-    /// The fix for a third of the user's recorded swipes switching the wrong desktop.
-    @Test func theStrokeAfterAWindUpWins() {
+    @Test func aWindUpTheOtherWayDoesNotDecideTheDirection() {
         var detector = SwipeDetector()
-        // Every recorded swipe starts with a small wind-up the other way, and the wind-up qualifies first.
-        var fired = sweep(&detector, from: Vec2(0.40, 0.6), to: Vec2(0.33, 0.6), seconds: 0.3, startingAt: 0, tail: 0)
-        fired += sweep(&detector, from: Vec2(0.33, 0.6), to: Vec2(0.63, 0.6), seconds: 0.3, startingAt: 0.3 + Self.frame)
+        _ = feed(&detector, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
+        var fired = feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.41, 0.6), seconds: 0.15, at: 0.4)
+        fired += feed(&detector, from: Vec2(0.41, 0.6), to: Vec2(0.72, 0.6), seconds: 0.25, at: 0.55)
         #expect(fired == [.left])
     }
 
-    /// A wind-up as long as the stroke is a stroke in its own right, so the stroke has to clearly beat it.
-    @Test func aStrokeSizedFirstMotionIsNotTreatedAsAWindUp() {
+    @Test func theWayBackIsNotASwipeEvenAfterAPauseAtTheEnd() {
         var detector = SwipeDetector()
-        var fired = sweep(&detector, from: Vec2(0.60, 0.6), to: Vec2(0.30, 0.6), seconds: 0.3, startingAt: 0, tail: 0)
-        // Coming back almost as far is the return stroke, not a bigger swipe the other way.
-        fired += sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.62, 0.6), seconds: 0.3, startingAt: 0.35)
-        #expect(fired == [.right])
-    }
-
-    @Test func returnStrokeDoesNotFireTheOppositeSwipe() {
-        var detector = SwipeDetector()
-        var fired = sweep(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.6, 0.6), seconds: 0.3, startingAt: 0, tail: 0)
-        fired += sweep(&detector, from: Vec2(0.6, 0.6), to: Vec2(0.3, 0.6), seconds: 0.3, startingAt: 0.45)
+        _ = feed(&detector, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
+        var fired = feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.72, 0.6), seconds: 0.2, at: 0.4)
+        fired += feed(&detector, from: Vec2(0.72, 0.6), seconds: 0.35, at: 0.6)
+        fired += feed(&detector, from: Vec2(0.72, 0.6), to: Vec2(0.5, 0.6), seconds: 0.2, at: 0.95)
         #expect(fired == [.left])
-        // Long enough afterwards, the other way is meant.
-        #expect(sweep(&detector, from: Vec2(0.6, 0.6), to: Vec2(0.3, 0.6), seconds: 0.3, startingAt: 3.0) == [.right])
     }
 
-    @Test func swipingTheSameWayTwiceFiresTwice() {
+    @Test func swipingAgainTakesAnotherHold() {
         var detector = SwipeDetector()
-        var fired = sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.60, 0.6), seconds: 0.3, startingAt: 0, tail: 0)
-        // The hand comes back to swipe again; the return itself is suppressed.
-        fired += sweep(&detector, from: Vec2(0.60, 0.6), to: Vec2(0.30, 0.6), seconds: 0.3, startingAt: 0.35, tail: 0)
-        fired += sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.60, 0.6), seconds: 0.3, startingAt: 0.7)
+        _ = feed(&detector, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
+        var fired = feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.72, 0.6), seconds: 0.2, at: 0.4)
+        // Straight back and straight over again, with no hold in between.
+        fired += feed(&detector, from: Vec2(0.72, 0.6), to: Vec2(0.5, 0.6), seconds: 0.3, at: 0.6)
+        fired += feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.72, 0.6), seconds: 0.2, at: 0.9)
+        #expect(fired == [.left])
+        // Back, held, and over again.
+        fired += feed(&detector, from: Vec2(0.72, 0.6), to: Vec2(0.5, 0.6), seconds: 0.3, at: 1.1)
+        fired += feed(&detector, from: Vec2(0.5, 0.6), seconds: 0.4, at: 1.4)
+        fired += feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.72, 0.6), seconds: 0.2, at: 1.8)
         #expect(fired == [.left, .left])
     }
 
-    @Test func aSecondStrokeWithoutAReturnIsNotASecondSwipe() {
-        var detector = SwipeDetector()
-        var fired = sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.60, 0.6), seconds: 0.3, startingAt: 0, tail: 0)
-        // One recorded single swipe fired twice: the hand drifted back too slowly to count as a return stroke, then
-        // went the same way again 1.27 s later. The timing here is that clip's.
-        fired += sweep(&detector, from: Vec2(0.60, 0.6), to: Vec2(0.50, 0.6), seconds: 0.9, startingAt: 0.35, tail: 0)
-        fired += sweep(&detector, from: Vec2(0.50, 0.6), to: Vec2(0.80, 0.6), seconds: 0.3, startingAt: 1.3)
+    @Test func aSlowDriftOrAHandComingDownDoesNotSwitch() {
+        var drifting = SwipeDetector()
+        _ = feed(&drifting, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
+        #expect(feed(&drifting, from: Vec2(0.5, 0.6), to: Vec2(0.7, 0.6), seconds: 1.5, at: 0.4).isEmpty)
+
+        var lowering = SwipeDetector()
+        _ = feed(&lowering, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
+        var fired = feed(&lowering, from: Vec2(0.5, 0.6), to: Vec2(0.52, 0.35), seconds: 0.25, at: 0.4)
+        fired += feed(&lowering, from: Vec2(0.52, 0.35), to: Vec2(0.75, 0.35), seconds: 0.25, at: 0.65)
+        #expect(fired.isEmpty)
+    }
+
+    @Test func aStrokeThatBlursOutOfTrackingStillSwitches() {
+        var gap = SwipeDetector()
+        _ = feed(&gap, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
+        #expect(feed(&gap, from: Vec2(0.5, 0.6), to: Vec2(0.75, 0.6), seconds: 0.3, at: 0.4, dropFrames: [2, 3, 4, 5]) == [.left])
+
+        var gone = SwipeDetector()
+        _ = feed(&gone, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
+        var fired = feed(&gone, from: Vec2(0.5, 0.6), to: Vec2(0.59, 0.6), seconds: 0.1, at: 0.4)
+        fired += (0..<20).compactMap { gone.update(nil, at: 0.5 + Double($0) * Self.frame) }
         #expect(fired == [.left])
-    }
-
-    @Test func swipingTheSameWayAgainLaterNeedsNoReturn() {
-        var detector = SwipeDetector()
-        var fired = sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.60, 0.6), seconds: 0.3, startingAt: 0, tail: 0)
-        // The hand leaves the frame and comes back, so its return never happened on camera. Requiring one with no
-        // time limit blocked this swipe for good.
-        for index in 0...75 {
-            if let direction = detector.update(nil, at: 0.35 + Double(index) * Self.frame) { fired.append(direction) }
-        }
-        fired += sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.60, 0.6), seconds: 0.3, startingAt: 3.0)
-        #expect(fired == [.left, .left])
-    }
-
-    @Test func slowDriftAndVerticalMotionDoNotFire() {
-        var detector = SwipeDetector()
-        #expect(sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.40, 0.6), seconds: 1.5, startingAt: 0).isEmpty)
-        #expect(sweep(&detector, from: Vec2(0.5, 0.4), to: Vec2(0.55, 0.8), seconds: 0.3, startingAt: 5).isEmpty)
-    }
-
-    @Test func onlyAFlatHandSwipes() {
-        var detector = SwipeDetector()
-        // A pointing or folded hand crossing the frame is a cursor move or a parking gesture, not a swipe.
-        #expect(sweep(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.6, 0.6), seconds: 0.3, startingAt: 0, flat: { _ in false }).isEmpty)
-        // Recorded swipes turn the palm away at the end, so the shape only has to hold for a few frames in a row.
-        #expect(sweep(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.6, 0.6), seconds: 0.3, startingAt: 5, flat: { $0 < 4 }) == [.left])
-        // Fingers that only flicker into shape are mistracking, not a swipe.
-        #expect(sweep(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.6, 0.6), seconds: 0.3, startingAt: 10, flat: { $0 % 3 == 0 }).isEmpty)
-    }
-
-    @Test func aGentleSwipeStillFires() {
-        var detector = SwipeDetector()
-        // The gentlest recorded swipe that has to fire: 0.076 of the frame in a fifth of a second.
-        #expect(sweep(&detector, from: Vec2(0.40, 0.6), to: Vec2(0.476, 0.6), seconds: 0.2, startingAt: 0) == [.left])
-    }
-
-    @Test func shortDropoutsDoNotBreakASwipe() {
-        var detector = SwipeDetector()
-        // A fast swipe blurs the hand out of tracking for a few frames in the middle of the stroke.
-        let fired = sweep(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.6, 0.6), seconds: 0.3, startingAt: 0, dropFrames: [2, 3, 4, 5])
-        #expect(fired == [.left])
-    }
-
-    @Test func aStrokeThatStallsMidFlightIsStillOneStroke() {
-        var detector = SwipeDetector()
-        // Recorded strokes pause for up to 0.24 s partway; split in two, both halves are too small to qualify.
-        var fired = sweep(&detector, from: Vec2(0.30, 0.6), to: Vec2(0.38, 0.6), seconds: 0.1, startingAt: 0, tail: 0.2)
-        fired += sweep(&detector, from: Vec2(0.38, 0.6), to: Vec2(0.46, 0.6), seconds: 0.1, startingAt: 0.33)
-        #expect(fired == [.left])
-    }
-
-    @Test func startHeightIsOffByDefaultButAvailable() {
-        var detector = SwipeDetector()
-        #expect(sweep(&detector, from: Vec2(0.3, 0.1), to: Vec2(0.6, 0.1), seconds: 0.3, startingAt: 0) == [.left])
-        var settings = SwipeDetector.Settings()
-        settings.minStartHeight = 0.2
-        var gated = SwipeDetector(settings: settings)
-        #expect(sweep(&gated, from: Vec2(0.3, 0.1), to: Vec2(0.6, 0.1), seconds: 0.3, startingAt: 0).isEmpty)
-    }
-
-    @Test func swipeMayDipBelowTheStartHeight() {
-        var settings = SwipeDetector.Settings()
-        settings.minStartHeight = 0.2
-        var detector = SwipeDetector(settings: settings)
-        #expect(sweep(&detector, from: Vec2(0.3, 0.26), to: Vec2(0.45, 0.17), seconds: 0.25, startingAt: 0) == [.left])
-    }
-
-    @Test func aControlPinchNeverSwipes() {
-        var detector = SwipeDetector()
-        // Thumb and index together on a hand that isn't flat: a volume or brightness drag, whatever it travels.
-        #expect(sweep(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.6, 0.6), seconds: 0.3, startingAt: 0,
-                      flat: { _ in false }, pinching: true).isEmpty)
-    }
-
-    @Test func aFlatHandThatReadsAsAPinchStillSwipes() {
-        var detector = SwipeDetector()
-        // A swiping hand tucks its thumb against an outstretched index and PinchTracker holds on for four frames
-        // after that, so recorded strokes were pinched for most of their length and were being thrown away.
-        #expect(sweep(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.6, 0.6), seconds: 0.3, startingAt: 0,
-                      pinching: true) == [.left])
     }
 
     @Test func invertSwapsDirections() {
         var settings = SwipeDetector.Settings()
         settings.invert = true
         var detector = SwipeDetector(settings: settings)
-        #expect(sweep(&detector, from: Vec2(0.3, 0.6), to: Vec2(0.6, 0.6), seconds: 0.3, startingAt: 0) == [.right])
+        _ = feed(&detector, from: Vec2(0.5, 0.6), seconds: 0.4, at: 0)
+        #expect(feed(&detector, from: Vec2(0.5, 0.6), to: Vec2(0.7, 0.6), seconds: 0.25, at: 0.4) == [.right])
     }
 }
