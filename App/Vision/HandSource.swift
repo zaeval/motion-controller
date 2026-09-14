@@ -57,6 +57,13 @@ final class HandSource: Sendable {
     /// crop is abandoned. Vision documents a pose request's points as normalized to the region of interest; this is
     /// what catches it if that ever isn't so, instead of sending the cursor somewhere absurd.
     private static let cropSizeTolerance = 2.0
+    /// `MC_CROP=1` looks for the hand in a crop around where it just was; `MC_CROP=probe` runs the crop beside the
+    /// whole frame and logs what each one saw, which is how the region's coordinate convention gets settled.
+    ///
+    /// Off by default because the first attempt cost far more than it saved: the crop pass found nothing and every
+    /// frame paid for both passes — 120–150 ms, 6–8 fps (2026-09-15). Until a probe says which way the region and
+    /// its results are oriented, whole-frame detection is what runs.
+    private static let cropMode = ProcessInfo.processInfo.environment["MC_CROP"]
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "HandSource")
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -117,7 +124,7 @@ final class HandSource: Sendable {
             return PoseFrame(bodies: bodies, looseHands: [], timestamp: time, imageAspect: aspect)
 
         case .handsPlusBody:
-            var hands = try await cropped(buffer, aspect: aspect, at: time)
+            var hands = Self.cropMode == nil ? [] : try await cropped(buffer, aspect: aspect, at: time)
             if hands.isEmpty {
                 // No crop to look in, or the hands have left it: the whole frame, which is also what sets the size a
                 // cropped result is checked against.
@@ -163,6 +170,10 @@ extension HandSource {
             return Self.cropRect(around: box, aspect: aspect)
         }
         guard let crop else { return [] }
+        if Self.cropMode == "probe" {
+            try await probe(buffer, aspect: aspect, at: time, crop: crop)
+            return []
+        }
         var request = DetectHumanHandPoseRequest()
         request.maximumHandCount = 2
         request.regionOfInterest = NormalizedRect(
@@ -187,6 +198,45 @@ extension HandSource {
             Self.logger.notice("Cropping to \(crop.width, format: .fixed(precision: 2), privacy: .public)x\(crop.height, format: .fixed(precision: 2), privacy: .public) of the frame; hand measures \(size, format: .fixed(precision: 3), privacy: .public), whole-frame \(expected ?? 0, format: .fixed(precision: 3), privacy: .public)")
         }
         return hands
+    }
+
+    /// Runs the region two ways against the whole frame and logs all three, so the region's convention — where its
+    /// origin is and what its results are normalized to — comes out of a measurement rather than a guess. One frame
+    /// of a hand in view is enough.
+    private func probe(_ buffer: CVPixelBuffer, aspect: Double, at time: TimeInterval, crop: CGRect) async throws {
+        let logged = state.withLock { state -> Bool in
+            guard !state.loggedCrop else { return true }
+            state.loggedCrop = true
+            return false
+        }
+        guard !logged else { return }
+        func describe(_ hands: [HandFrame]) -> String {
+            guard let hand = hands.max(by: { ($0.handSize ?? 0) < ($1.handSize ?? 0) }), let wrist = hand[.wrist]
+            else { return "none" }
+            return String(format: "n=%d size %.3f wrist (%.2f,%.2f)", hands.count, hand.handSize ?? 0, wrist.x, wrist.y)
+        }
+        // Timed, because cost decides this as much as coordinates do: the first attempt at cropping ran at 6–8 fps.
+        func run(_ region: NormalizedRect?) async throws -> (hands: [HandFrame], milliseconds: Double) {
+            var request = DetectHumanHandPoseRequest()
+            request.maximumHandCount = 2
+            // Left alone for the whole-frame run: the property is not optional, and its default is the whole frame.
+            if let region { request.regionOfInterest = region }
+            let clock = ContinuousClock()
+            let start = clock.now
+            let hands = try await request.perform(on: buffer).map {
+                VisionMapping.hand(from: $0, side: nil, aspect: aspect, at: time)
+            }
+            return (hands, start.duration(to: clock.now).milliseconds)
+        }
+        let whole = try await run(nil)
+        let asGiven = try await run(
+            NormalizedRect(x: crop.minX, y: crop.minY, width: crop.width, height: crop.height)
+        )
+        // The same region with its vertical origin at the other edge, in case the region counts from the top.
+        let flipped = try await run(
+            NormalizedRect(x: crop.minX, y: 1 - crop.maxY, width: crop.width, height: crop.height)
+        )
+        Self.logger.notice("Crop probe: region (\(crop.minX, format: .fixed(precision: 2), privacy: .public),\(crop.minY, format: .fixed(precision: 2), privacy: .public)) \(crop.width, format: .fixed(precision: 2), privacy: .public)x\(crop.height, format: .fixed(precision: 2), privacy: .public) · whole \(describe(whole.hands), privacy: .public) \(whole.milliseconds, format: .fixed(precision: 1), privacy: .public)ms · as-given \(describe(asGiven.hands), privacy: .public) \(asGiven.milliseconds, format: .fixed(precision: 1), privacy: .public)ms · y-flipped \(describe(flipped.hands), privacy: .public) \(flipped.milliseconds, format: .fixed(precision: 1), privacy: .public)ms")
     }
 
     private func wholeFrame(_ buffer: CVPixelBuffer, aspect: Double, at time: TimeInterval) async throws -> [HandFrame] {
