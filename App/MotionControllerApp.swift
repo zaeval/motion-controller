@@ -40,9 +40,20 @@ private struct MenuContent: View {
             get: { appState.pipeline.lockEnabled },
             set: { appState.pipeline.lockEnabled = $0 }
         ))
-        .disabled(appState.pipeline.faceTemplate == nil)
-        Button(appState.pipeline.faceTemplate == nil ? "얼굴 등록…" : "얼굴 다시 등록…") { appState.showEnrollment() }
+        .disabled(appState.pipeline.enrolledFaces.isEmpty)
+        Button(appState.pipeline.enrolledFaces.isEmpty ? "얼굴 등록…" : "얼굴 추가…") { appState.showEnrollment() }
             .disabled(!appState.isEnabled || !appState.pipeline.faceUnlockAvailable)
+        if !appState.pipeline.enrolledFaces.isEmpty {
+            Menu("등록된 얼굴 \(appState.pipeline.enrolledFaces.faces.count)명") {
+                ForEach(appState.pipeline.enrolledFaces.faces) { face in
+                    Menu(face.name) {
+                        Button("다시 등록…") { appState.showEnrollment(replacing: face) }
+                            .disabled(!appState.isEnabled || !appState.pipeline.faceUnlockAvailable)
+                        Button("삭제") { appState.pipeline.removeFace(id: face.id) }
+                    }
+                }
+            }
+        }
         if appState.pipeline.intruderPhotoCount > 0 {
             Button("📸 잠긴 동안 찍힌 사진 \(appState.pipeline.intruderPhotoCount)장 보기…") {
                 appState.pipeline.revealIntruderPhotos()

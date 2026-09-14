@@ -54,8 +54,11 @@ final class Pipeline {
     /// Photos of whoever tried to use the Mac while it was locked.
     static let intruderPhotosDirectory = URL.applicationSupportDirectory
         .appending(path: "MotionController/Intruders", directoryHint: .isDirectory)
-    /// The owner's face: embeddings only, never an image.
-    static let faceTemplateURL = URL.applicationSupportDirectory
+    /// Everyone enrolled: names and face embeddings, never an image.
+    static let facesURL = URL.applicationSupportDirectory
+        .appending(path: "MotionController/faces.json", directoryHint: .notDirectory)
+    /// The single face enrolled before more than one person could be (2026-09-14); read once and moved into `facesURL`.
+    private static let legacyFaceURL = URL.applicationSupportDirectory
         .appending(path: "MotionController/owner-face.json", directoryHint: .notDirectory)
 
     let camera = CameraService()
@@ -80,6 +83,8 @@ final class Pipeline {
     @ObservationIgnored private let faceSource = FaceSource()
     @ObservationIgnored private var faceVerification = FaceVerification()
     @ObservationIgnored private var enrollment: FaceEnrollment?
+    /// The person being enrolled: a new id, or the id of the one being enrolled again.
+    @ObservationIgnored private var enrollingID: UUID?
     @ObservationIgnored private let snapshots = SnapshotTaker()
     @ObservationIgnored private var intruderWatch = IntruderWatch()
     /// Numbers intruder attempts; photos carry theirs, so one that arrives late still lands in the right attempt.
@@ -136,13 +141,17 @@ final class Pipeline {
     private(set) var lastError: String?
     /// The dark screen is locked: input is held back until the owner's face or Touch ID / the password lets it go.
     private(set) var isLocked = false
-    /// The owner's enrolled face; nil until enrolled.
-    private(set) var faceTemplate: FaceTemplate?
+    /// Everyone whose face unlocks the screen.
+    private(set) var enrolledFaces = EnrolledFaces()
     private(set) var enrollmentStatus = EnrollmentStatus.off
+    /// Who the enrollment under way, or the one just saved, is for.
+    private(set) var enrollingName: String?
     private(set) var enrollmentProgress = 0.0
     private(set) var enrollmentHint: String?
-    /// The latest face check's similarity to the owner while locked, for the debug preview.
+    /// The latest face check's similarity to the closest enrolled person while locked, and who that was, for the
+    /// debug preview.
     private(set) var lastFaceSimilarity: Double?
+    private(set) var lastFaceMatch: String?
     /// Photos saved of people trying to use the Mac while it was locked.
     private(set) var intruderPhotoCount = 0
 
@@ -207,11 +216,7 @@ final class Pipeline {
         faceSource.setHandler { [weak self] output in
             Task { @MainActor in self?.receiveFace(output) }
         }
-        if let data = try? Data(contentsOf: Self.faceTemplateURL) {
-            // Enrollments from before bad frames were dropped can still hold one.
-            faceTemplate = (try? JSONDecoder().decode(FaceTemplate.self, from: data))?
-                .droppingOutliers(below: FaceEnrollment.Settings().outlierBelow)
-        }
+        loadFaces()
         screenLock.onAuthenticated = { [weak self] in
             self?.endLock("🔓 Touch ID·암호로 잠금 해제", byOwner: true)
         }
@@ -352,25 +357,52 @@ final class Pipeline {
         switchMode(to: newMode)
     }
 
-    /// Starts (or restarts) collecting the owner's face; the enrollment window shows how far along it is.
-    func startEnrollment() {
+    /// Starts collecting `name`'s face, as a new person or in place of the one enrolled as `id`; the enrollment window
+    /// shows how far along it is.
+    func startEnrollment(name: String, replacing id: UUID? = nil) {
         guard !isLocked else { return }
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        enrollingName = trimmed.isEmpty ? "이름 없음" : trimmed
+        enrollingID = id ?? UUID()
         enrollment = FaceEnrollment()
         enrollmentStatus = .collecting
         enrollmentProgress = 0
         enrollmentHint = nil
         updateFaceChecks()
-        logMotion("🙂 얼굴 등록 시작")
+        logMotion("🙂 \(enrollingName ?? "") 얼굴 등록 시작")
     }
 
-    /// The window closed: stop collecting. A face enrolled before stays.
+    /// Starts the same person's enrollment over.
+    func restartEnrollment() {
+        guard let enrollingName else { return }
+        startEnrollment(name: enrollingName, replacing: enrollingID)
+    }
+
+    /// The window closed: stop collecting. Faces enrolled before stay.
     func cancelEnrollment() {
         guard enrollment != nil || enrollmentStatus != .off else { return }
         enrollment = nil
+        enrollingID = nil
+        enrollingName = nil
         enrollmentStatus = .off
         enrollmentProgress = 0
         enrollmentHint = nil
         updateFaceChecks()
+    }
+
+    func removeFace(id: UUID) {
+        guard let face = enrolledFaces.faces.first(where: { $0.id == id }) else { return }
+        var updated = enrolledFaces
+        updated.remove(id: id)
+        do {
+            try saveFaces(updated)
+        } catch {
+            Self.logger.error("Removing a face failed: \(String(describing: error), privacy: .public)")
+            return
+        }
+        enrolledFaces = updated
+        updateFaceChecks()
+        logMotion("🙂 \(face.name) 얼굴 삭제")
     }
 
     /// `MC_LOCK_TEST`: locks now, whoever is there, and lets go after `seconds` whatever happens, so the tap and the
@@ -379,7 +411,7 @@ final class Pipeline {
         Self.logger.notice(
             """
             Lock self-test for \(seconds)s: accessibility \(self.accessibilityTrusted, privacy: .public), \
-            authentication \(ScreenLock.canAuthenticate, privacy: .public), face \(self.faceTemplate != nil, privacy: .public)
+            authentication \(ScreenLock.canAuthenticate, privacy: .public), faces \(self.enrolledFaces.faces.count, privacy: .public)
             """
         )
         faceUnlockSuspended = ProcessInfo.processInfo.environment["MC_LOCK_TEST_NO_FACE"] != nil
@@ -471,24 +503,30 @@ final class Pipeline {
             }
             return
         }
-        guard isLocked, let faceTemplate else { return }
-        let similarity = output.embedding.map { faceTemplate.similarity(to: $0) }
+        guard isLocked, !enrolledFaces.isEmpty else { return }
+        // Any enrolled person unlocks, and none of them is photographed: compare with whoever is closest.
+        let match = output.embedding.flatMap { enrolledFaces.bestMatch(for: $0) }
+        let similarity = match?.similarity
         lastFaceSimilarity = similarity
+        lastFaceMatch = match?.face.name
         watchIntruders(.faceChecked(similarity: similarity))
-        if let similarity {
-            Self.logger.notice("Face similarity \(similarity, format: .fixed(precision: 3)) (\(output.milliseconds, format: .fixed(precision: 0)) ms)")
+        if let match {
+            Self.logger.notice(
+                "Face similarity \(match.similarity, format: .fixed(precision: 3)) to \(match.face.name, privacy: .private) (\(output.milliseconds, format: .fixed(precision: 0)) ms)"
+            )
         }
         if !faceUnlockSuspended, faceVerification.update(similarity: similarity, at: output.time) {
-            endLock("🔓 얼굴 확인 · 잠금 해제", byOwner: true)
+            endLock("🔓 \(match?.face.name ?? "") 얼굴 확인 · 잠금 해제", byOwner: true)
         }
     }
 
     private func finishEnrollment(_ template: FaceTemplate) {
+        let wasEmpty = enrolledFaces.isEmpty
+        let face = EnrolledFace(id: enrollingID ?? UUID(), name: enrollingName ?? "이름 없음", template: template)
+        var updated = enrolledFaces
+        updated.save(face)
         do {
-            try FileManager.default.createDirectory(
-                at: Self.faceTemplateURL.deletingLastPathComponent(), withIntermediateDirectories: true
-            )
-            try JSONEncoder().encode(template).write(to: Self.faceTemplateURL, options: .atomic)
+            try saveFaces(updated)
         } catch {
             Self.logger.error("Saving the enrolled face failed: \(String(describing: error), privacy: .public)")
             enrollmentHint = "저장하지 못했어요: \(error.localizedDescription)"
@@ -500,18 +538,46 @@ final class Pipeline {
         Self.logger.notice(
             "Face enrolled from \(template.embeddings.count) samples, similarity to the template \(selfSimilarity.min() ?? 0, format: .fixed(precision: 3))...\(selfSimilarity.max() ?? 0, format: .fixed(precision: 3))"
         )
-        faceTemplate = template
+        enrolledFaces = updated
         enrollment = nil
+        enrollingID = nil
         enrollmentStatus = .saved
         enrollmentHint = nil
         updateFaceChecks()
-        lockEnabled = true
-        logMotion("🙂 얼굴 등록 완료 · 화면 잠금 켜짐")
+        // The first face turns the lock on, as enrolling was for; later ones leave the menu's choice alone.
+        if wasEmpty {
+            lockEnabled = true
+        }
+        logMotion("🙂 \(face.name) 얼굴 등록 완료" + (wasEmpty ? " · 화면 잠금 켜짐" : ""))
+    }
+
+    private func loadFaces() {
+        let outlierBelow = FaceEnrollment.Settings().outlierBelow
+        if let data = try? Data(contentsOf: Self.facesURL),
+           let saved = try? JSONDecoder().decode(EnrolledFaces.self, from: data) {
+            enrolledFaces = saved.droppingOutliers(below: outlierBelow)
+        } else if let data = try? Data(contentsOf: Self.legacyFaceURL),
+                  let template = try? JSONDecoder().decode(FaceTemplate.self, from: data) {
+            // Enrollments from before bad frames were dropped can still hold one.
+            let migrated = EnrolledFaces(faces: [EnrolledFace(name: "나", template: template.droppingOutliers(below: outlierBelow))])
+            do {
+                try saveFaces(migrated)
+                Self.logger.notice("Moved the single enrolled face into \(Self.facesURL.lastPathComponent, privacy: .public)")
+            } catch {
+                Self.logger.error("Moving the enrolled face failed: \(String(describing: error), privacy: .public)")
+            }
+            enrolledFaces = migrated
+        }
+    }
+
+    private func saveFaces(_ faces: EnrolledFaces) throws {
+        try FileManager.default.createDirectory(at: Self.facesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
+        try JSONEncoder().encode(faces).write(to: Self.facesURL, options: .atomic)
     }
 
     /// Face checks run only while something needs them.
     private func updateFaceChecks() {
-        faceSource.wanted = isRunning && (enrollment != nil || (isLocked && faceTemplate != nil))
+        faceSource.wanted = isRunning && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty))
     }
 
     /// Locks input and parks recognition. False, with nothing locked, when locking can't work right now.
@@ -650,7 +716,7 @@ final class Pipeline {
         let screenChange = screenPresence.update(personPresent: screenPresent, at: time)
         if screenPresence.state == .dimmed {
             if screenChange != nil {
-                let locked = lockEnabled && faceTemplate != nil && faceSource.isAvailable && accessibilityTrusted
+                let locked = lockEnabled && !enrolledFaces.isEmpty && faceSource.isAvailable && accessibilityTrusted
                     && ScreenLock.canAuthenticate && engageLock()
                 screen.dim(wakesOnInput: !locked)
                 logMotion(locked ? "🔒 사람 없음 · 화면 잠금" : "🌙 사람 없음 · 화면 어둡게")

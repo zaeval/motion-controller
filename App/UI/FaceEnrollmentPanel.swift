@@ -1,8 +1,9 @@
 import AppKit
+import GestureCore
 import SwiftUI
 
-/// The window that enrolls the owner's face: a mirrored camera view, how far along it is, and what to do next.
-/// Closing it before it finishes keeps the face enrolled before, if any.
+/// The window that enrolls a face: who it is, a mirrored camera view, how far along it is, and what to do next.
+/// Closing it before it finishes keeps every face enrolled before.
 @MainActor
 final class FaceEnrollmentPanelController: NSObject, NSWindowDelegate {
     private let panel: NSPanel
@@ -11,23 +12,27 @@ final class FaceEnrollmentPanelController: NSObject, NSWindowDelegate {
     init(pipeline: Pipeline) {
         self.pipeline = pipeline
         panel = NSPanel(
-            contentRect: NSRect(x: 0, y: 0, width: 440, height: 520),
+            contentRect: NSRect(x: 0, y: 0, width: 440, height: 560),
             styleMask: [.titled, .closable],
             backing: .buffered,
             defer: true
         )
         super.init()
-        panel.title = "얼굴 등록"
         panel.level = .floating
         panel.isReleasedWhenClosed = false
         panel.delegate = self
-        panel.contentView = NSHostingView(rootView: FaceEnrollmentView(pipeline: pipeline) { [weak self] in
-            self?.panel.close()
-        })
     }
 
-    func show() {
-        pipeline.startEnrollment()
+    /// A new person when `face` is nil, otherwise that person enrolled again under the same name.
+    func show(replacing face: EnrolledFace?) {
+        pipeline.cancelEnrollment()
+        panel.title = face.map { "\($0.name) 얼굴 다시 등록" } ?? "얼굴 등록"
+        let name = face?.name ?? (pipeline.enrolledFaces.isEmpty ? "나" : "")
+        panel.contentView = NSHostingView(rootView: FaceEnrollmentView(
+            pipeline: pipeline, replacing: face?.id, initialName: name
+        ) { [weak self] in
+            self?.panel.close()
+        })
         panel.center()
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate()
@@ -40,7 +45,18 @@ final class FaceEnrollmentPanelController: NSObject, NSWindowDelegate {
 
 struct FaceEnrollmentView: View {
     let pipeline: Pipeline
+    let replacing: UUID?
     let close: () -> Void
+    @State private var name: String
+
+    init(pipeline: Pipeline, replacing: UUID?, initialName: String, close: @escaping () -> Void) {
+        self.pipeline = pipeline
+        self.replacing = replacing
+        self.close = close
+        _name = State(initialValue: initialName)
+    }
+
+    private var canStart: Bool { !name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
 
     var body: some View {
         VStack(spacing: 14) {
@@ -51,15 +67,26 @@ struct FaceEnrollmentView: View {
                 .clipShape(RoundedRectangle(cornerRadius: 10))
 
             switch pipeline.enrollmentStatus {
-            case .saved:
-                Text("등록 완료").font(.title3.bold())
-                Text("까만 화면 잠금이 켜졌어요. 화면이 까매진 뒤에는 얼굴이 확인되거나 Touch ID·암호를 넣어야 풀려요. 메뉴에서 끌 수 있어요.")
-                    .multilineTextAlignment(.center)
-                    .foregroundStyle(.secondary)
-                Button("닫기", action: close)
-                    .keyboardShortcut(.defaultAction)
-            case .collecting, .off:
-                Text("카메라를 보고 잠시 있어 주세요").font(.title3.bold())
+            case .off:
+                Text("누구의 얼굴인가요?").font(.title3.bold())
+                TextField("이름", text: $name)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(width: 240)
+                    .onSubmit(start)
+                let others = pipeline.enrolledFaces.faces.filter { $0.id != replacing }.map(\.name)
+                if !others.isEmpty {
+                    Text("등록된 사람: \(others.joined(separator: ", "))")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                }
+                HStack {
+                    Button("취소", action: close)
+                    Button("등록 시작", action: start)
+                        .keyboardShortcut(.defaultAction)
+                        .disabled(!canStart)
+                }
+            case .collecting:
+                Text("\(pipeline.enrollingName ?? name) · 카메라를 보고 잠시 있어 주세요").font(.title3.bold())
                 ProgressView(value: pipeline.enrollmentProgress)
                 Text(pipeline.enrollmentHint ?? "얼굴을 찾는 중…")
                     .foregroundStyle(.secondary)
@@ -68,8 +95,15 @@ struct FaceEnrollmentView: View {
                     .foregroundStyle(.tertiary)
                 HStack {
                     Button("나중에", action: close)
-                    Button("처음부터") { pipeline.startEnrollment() }
+                    Button("처음부터") { pipeline.restartEnrollment() }
                 }
+            case .saved:
+                Text("\(pipeline.enrollingName ?? name) 등록 완료").font(.title3.bold())
+                Text("등록된 사람 누구의 얼굴이든 까만 화면 잠금을 풀 수 있어요. 더 추가하거나 지우는 건 메뉴의 '등록된 얼굴'에서 해요.")
+                    .multilineTextAlignment(.center)
+                    .foregroundStyle(.secondary)
+                Button("닫기", action: close)
+                    .keyboardShortcut(.defaultAction)
             }
 
             if !pipeline.isRunning {
@@ -80,5 +114,10 @@ struct FaceEnrollmentView: View {
         }
         .padding(20)
         .frame(width: 440)
+    }
+
+    private func start() {
+        guard canStart else { return }
+        pipeline.startEnrollment(name: name, replacing: replacing)
     }
 }

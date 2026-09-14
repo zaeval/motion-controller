@@ -1,4 +1,5 @@
 import Foundation
+import GestureCore
 import KeyboardShortcuts
 import Observation
 
@@ -27,9 +28,9 @@ final class AppState {
         }
     }
 
-    /// Menu action, and the first launch without an enrolled face.
-    func showEnrollment() {
-        enrollmentPanel.show()
+    /// Menu actions — add a person, or enroll one again — and the first launch without an enrolled face.
+    func showEnrollment(replacing face: EnrolledFace? = nil) {
+        enrollmentPanel.show(replacing: face)
     }
 
     /// Menu action: ask for the four screen corners, or stop asking.
@@ -66,7 +67,7 @@ final class AppState {
 
         // The first launch without an enrolled face asks for it, once; the menu can ask again later.
         let lockTest = ProcessInfo.processInfo.environment["MC_LOCK_TEST"]
-        if lockTest == nil, pipeline.faceTemplate == nil, pipeline.faceUnlockAvailable,
+        if lockTest == nil, pipeline.enrolledFaces.isEmpty, pipeline.faceUnlockAvailable,
            !UserDefaults.standard.bool(forKey: Self.enrollmentOfferedKey) {
             UserDefaults.standard.set(true, forKey: Self.enrollmentOfferedKey)
             Task {

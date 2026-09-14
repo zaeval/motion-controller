@@ -131,9 +131,11 @@ struct DebugPreviewView: View {
     }
 
     private var lockLine: String {
-        let face = pipeline.faceTemplate == nil ? "얼굴 미등록" : "얼굴 등록됨"
+        let count = pipeline.enrolledFaces.faces.count
+        let face = count == 0 ? "얼굴 미등록" : "얼굴 \(count)명"
         let lock = pipeline.isLocked ? "🔒 잠김" : pipeline.lockEnabled ? "잠금 켜짐" : "잠금 꺼짐"
-        let similarity = pipeline.lastFaceSimilarity.map { String(format: " · 유사도 %.2f", $0) } ?? ""
+        let who = pipeline.lastFaceMatch.map { " (\($0))" } ?? ""
+        let similarity = pipeline.lastFaceSimilarity.map { String(format: " · 유사도 %.2f", $0) + who } ?? ""
         return "\(lock) · \(face)\(similarity)"
     }
 
