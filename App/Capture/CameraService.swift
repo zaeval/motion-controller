@@ -23,6 +23,8 @@ final class CameraService: NSObject, @unchecked Sendable {
     /// Read and written only on `queue`.
     private var loggedFrameSize = false
     private var lastLightLog = -TimeInterval.infinity
+    /// Frames logged since the session started, so the camera's exposure warm-up is visible on every launch.
+    private var lightLogs = 0
 
     static func availableDevices() -> [Device] {
         AVCaptureDevice.DiscoverySession(
@@ -145,6 +147,7 @@ final class CameraService: NSObject, @unchecked Sendable {
             kCVPixelBufferHeightKey as String: Int(size.height),
         ]
         loggedFrameSize = false
+        lightLogs = 0
         Self.logger.notice("Camera format \(size.width)x\(size.height) at \(Int(frameRate)) fps")
     }
 }
@@ -189,8 +192,9 @@ extension CameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
         }
         let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
         if let luma = Self.meanLuma(of: pixelBuffer) {
-            if time - lastLightLog >= 5 {
+            if time - lastLightLog >= 5 || lightLogs < 8 {
                 lastLightLog = time
+                lightLogs += 1
                 Self.logger.notice("Light luma \(luma, format: .fixed(precision: 3), privacy: .public)")
             }
             onLight?(luma, time)

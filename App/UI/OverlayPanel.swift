@@ -71,15 +71,23 @@ struct OverlayView: View {
     }
 
     private var dotColor: Color {
+        // Not the mode's colour while the room is too dark: the mode isn't what's deciding anything.
+        if pipeline.sceneIsDark { return .brown }
         switch pipeline.mode {
-        case .idle: .gray
-        case .normal: .green
-        case .pointer: pipeline.pointerStatus.pressed ? .orange : .blue
-        case .desktop: .purple
+        case .idle: return .gray
+        case .normal: return .green
+        case .pointer: return pipeline.pointerStatus.pressed ? .orange : .blue
+        case .desktop: return .purple
         }
     }
 
     private var detail: String {
+        // Nothing else is true while the room is too dark: no gesture acts and the screen is left alone, so say that
+        // rather than let it look broken.
+        if pipeline.sceneIsDark {
+            let luma = pipeline.sceneLuma.map { String(format: " (밝기 %.2f)", $0) } ?? ""
+            return "🌑 조도 부족 · 일시 중지\(luma)"
+        }
         guard pipeline.personPresent else { return pipeline.mode == .idle ? "사람 없음" : "사람 없음 · 곧 IDLE" }
         switch pipeline.mode {
         case .idle: return idleDetail
