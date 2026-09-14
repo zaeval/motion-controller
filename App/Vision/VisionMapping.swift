@@ -4,12 +4,17 @@ import Vision
 
 /// Converts Vision observations into GestureCore's framework-free models.
 enum VisionMapping {
-    /// `side` overrides Vision's own chirality when the hand came from a body (`leftHand`/`rightHand`).
-    static func hand(from observation: HumanHandPoseObservation, side: GestureCore.Chirality?, aspect: Double, at time: TimeInterval) -> HandFrame {
+    /// `side` overrides Vision's own chirality when the hand came from a body (`leftHand`/`rightHand`). `crop` is
+    /// the region of interest the request ran on, when it ran on one: a pose request's points come back normalized to
+    /// that region, so they are put back into the whole image's coordinates here.
+    static func hand(
+        from observation: HumanHandPoseObservation, side: GestureCore.Chirality?, aspect: Double,
+        at time: TimeInterval, crop: CGRect? = nil
+    ) -> HandFrame {
         var joints: [HandJoint: JointPoint] = [:]
         for joint in HandJoint.allCases {
             if let point = observation.joint(for: joint.visionName) {
-                joints[joint] = JointPoint(point)
+                joints[joint] = JointPoint(point, crop: crop)
             }
         }
         let visionChirality: GestureCore.Chirality? = observation.chirality.map { $0 == .left ? .left : .right }
@@ -34,8 +39,15 @@ enum VisionMapping {
 }
 
 private extension JointPoint {
-    init(_ joint: Joint) {
-        self.init(position: Vec2(Double(joint.location.x), Double(joint.location.y)), confidence: Double(joint.confidence))
+    init(_ joint: Joint, crop: CGRect? = nil) {
+        var position = Vec2(Double(joint.location.x), Double(joint.location.y))
+        if let crop {
+            position = Vec2(
+                Double(crop.minX) + position.x * Double(crop.width),
+                Double(crop.minY) + position.y * Double(crop.height)
+            )
+        }
+        self.init(position: position, confidence: Double(joint.confidence))
     }
 }
 
