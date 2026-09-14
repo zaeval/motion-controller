@@ -93,6 +93,8 @@ final class Pipeline {
     @ObservationIgnored private var keptAttempts: Set<Int> = []
     /// Kept since the screen last came back: the alert shows them then.
     @ObservationIgnored private var unseenIntruderPhotos: [URL] = []
+    /// While the tutorial is open: what the user just did, to clear its missions with.
+    @ObservationIgnored var onTutorialEvent: ((TutorialEvent) -> Void)?
     /// Shows the alert for photos kept while locked, once the screen is back.
     @ObservationIgnored var onIntruderPhotos: ((Int, URL?) -> Void)?
     /// The frame time analysis last ran at, for things that happen between frames.
@@ -352,6 +354,12 @@ final class Pipeline {
     }
 
     /// The menu and debug-preview toggle.
+    /// The tutorial starts from IDLE, so its first mission is entering gesture mode.
+    func parkForTutorial() {
+        guard isRunning, !isLocked, let newMode = modeController.set(.idle) else { return }
+        switchMode(to: newMode)
+    }
+
     func setPointerMode(_ on: Bool) {
         guard isRunning, let newMode = modeController.set(on ? .pointer : .normal) else { return }
         switchMode(to: newMode)
@@ -779,6 +787,11 @@ final class Pipeline {
             if status != pointerStatus {
                 pointerStatus = status
             }
+            if let onTutorialEvent {
+                if status.engaged, !status.scrolling, !status.dragging { onTutorialEvent(.cursorMoved) }
+                if status.scrolling { onTutorialEvent(.scrolled) }
+                if status.dragging { onTutorialEvent(.dragged) }
+            }
 
         case .normal:
             if analyzer.isSwipeArmed != swipeArmed {
@@ -835,6 +848,20 @@ final class Pipeline {
     /// Posts what gesture mode asked for, or says why it couldn't.
     private func dispatch(_ actions: [GestureAction]) {
         guard !actions.isEmpty else { return }
+        // The gesture was made whether or not macOS lets the action through, and that's what the tutorial checks.
+        if let onTutorialEvent {
+            for action in actions {
+                switch action {
+                case .desktop: onTutorialEvent(.desktopSwitched)
+                case .media(.playPause): onTutorialEvent(.playPaused)
+                case .media(.volumeUp), .media(.volumeDown), .media(.brightnessUp), .media(.brightnessDown):
+                    onTutorialEvent(.volumeOrBrightness)
+                case .keyCombo(let combo) where combo == .zoomIn: onTutorialEvent(.zoomed(in: true))
+                case .keyCombo(let combo) where combo == .zoomOut: onTutorialEvent(.zoomed(in: false))
+                default: break
+                }
+            }
+        }
         guard accessibilityTrusted else {
             logMotion("⚠️ 손쉬운 사용 권한 필요")
             if !promptedForAccessibility {
@@ -865,6 +892,7 @@ final class Pipeline {
         swipeArmed = false
         mode = newMode
         let reason = modeController.lastChangeReason
+        onTutorialEvent?(.mode(newMode, because: reason))
         Self.logger.notice("Mode \(newMode.rawValue, privacy: .public) (\(reason?.rawValue ?? "-", privacy: .public))")
         let because = reason.map { " · \($0.displayName)" } ?? ""
         switch newMode {
@@ -903,8 +931,10 @@ final class Pipeline {
                 // A down with its up in the same frame is a click; a down on its own starts a drag or a hold.
                 guard index + 1 < commands.count, case .buttonUp = commands[index + 1] else { continue }
                 logMotion(clickCount >= 2 ? "👆👆 더블클릭" : "👆 클릭")
+                onTutorialEvent?(.clicked)
             case .rightClick:
                 logMotion("✌️ 우클릭")
+                onTutorialEvent?(.rightClicked)
             default:
                 continue
             }
