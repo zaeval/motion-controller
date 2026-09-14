@@ -180,7 +180,6 @@ struct CalibrationButtonsView: View {
                 Button(isLast(state) ? "완료" : "다음 모서리") { pipeline.confirmCalibrationCorner() }
                     .controlSize(.large)
                     .buttonStyle(.borderedProminent)
-                    .keyboardShortcut(.defaultAction)
             } else {
                 Text("모서리를 가리키고 멈추면 버튼이 나타납니다")
                     .font(.callout)

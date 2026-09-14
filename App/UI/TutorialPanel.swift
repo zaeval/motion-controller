@@ -255,7 +255,7 @@ struct TutorialView: View {
             VStack(alignment: .leading, spacing: 8) {
                 Text("얼굴 인식 모델이 없어서 등록을 할 수 없어요.")
                     .font(.headline)
-                Text("라이선스 때문에 저장소에 넣지 않았습니다 (약 44MB). 터미널에 아래를 붙여넣으면 내려받기부터 다시 빌드까지 됩니다. 빌드가 끝나면 앱을 다시 실행하세요.")
+                Text("라이선스 때문에 저장소에 넣지 않았습니다 (약 44MB). 아래를 터미널에 붙여넣으면 내려받기부터 다시 빌드까지 됩니다. 첫 줄의 경로는 project.yml이 있는 폴더로 바꿔 주세요. 빌드가 끝나면 앱을 다시 실행하세요.")
                     .font(.callout)
                     .foregroundStyle(.secondary)
                     .wrapping()
@@ -283,9 +283,11 @@ struct TutorialView: View {
     }
 
     /// The README's steps 2 and 3, as one paste. The rebuild is in there because the model only reaches the app
-    /// through it, and the paths are relative, so the first line says where to run it.
+    /// through it, and the paths are relative, so it starts by going to the repo. No `#` comments in here: zsh
+    /// doesn't take them at an interactive prompt (interactive_comments is off), so a commented line pasted in
+    /// becomes `cd: too many arguments` and everything after it runs in the wrong directory.
     private static let modelInstall = """
-        cd "$HOME/motion controller"   # project.yml이 있는 폴더
+        cd "$HOME/motion controller"
         curl -L -o /tmp/AdaFace_IR18.mlpackage.zip https://github.com/john-rocky/CoreML-Models/releases/download/adaface-v1/AdaFace_IR18.mlpackage.zip
         mkdir -p App/Vision/Models && unzip -o /tmp/AdaFace_IR18.mlpackage.zip -d App/Vision/Models
         xcodegen generate && xcodebuild -project MotionController.xcodeproj -scheme MotionController -configuration Debug -derivedDataPath build/DerivedData build
