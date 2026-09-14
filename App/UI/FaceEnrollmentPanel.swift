@@ -19,6 +19,9 @@ final class FaceEnrollmentPanelController: NSObject, NSWindowDelegate {
         )
         super.init()
         panel.level = .floating
+        // A panel hides whenever its app isn't frontmost, and a menu-bar app often can't make itself frontmost:
+        // the first-launch tutorial was created but never showed (2026-09-14).
+        panel.hidesOnDeactivate = false
         panel.isReleasedWhenClosed = false
         panel.delegate = self
     }
