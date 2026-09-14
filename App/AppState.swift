@@ -12,6 +12,9 @@ final class AppState {
     @ObservationIgnored private let enrollmentPanel: FaceEnrollmentPanelController
     @ObservationIgnored private let intruderAlert = IntruderAlertPanelController()
     @ObservationIgnored private let tutorial: TutorialPanelController
+    @ObservationIgnored private let desktopModePanel: DesktopModePanelController
+    /// Follows `pipeline.mode` so the desktop-mode frame is up exactly while that mode is.
+    @ObservationIgnored private var modeWatch: Task<Void, Never>?
     /// Mirrors the pipeline's calibration state so the menu can offer to cancel it.
     private(set) var isCalibrating = false
     private static let enrollmentOfferedKey = "faceEnrollmentOffered"
@@ -26,6 +29,7 @@ final class AppState {
             } else {
                 pipeline.stop()
                 overlay.hide()
+                desktopModePanel.hide()
             }
         }
     }
@@ -69,8 +73,19 @@ final class AppState {
         calibrationPanel = CalibrationPanelController(pipeline: pipeline)
         enrollmentPanel = FaceEnrollmentPanelController(pipeline: pipeline)
         tutorial = TutorialPanelController(pipeline: pipeline)
+        desktopModePanel = DesktopModePanelController(pipeline: pipeline)
         pipeline.onIntruderPhotos = { [intruderAlert] count, latest in
             intruderAlert.show(count: count, latest: latest)
+        }
+        // The tutorial's last two missions are setup, not gestures: they open these panels.
+        tutorial.onEnroll = { [weak self] in self?.showEnrollment() }
+        tutorial.onCalibrate = { [weak self] in self?.toggleCalibration() }
+        pipeline.onModeChange = { [desktopModePanel] mode in
+            if mode == .desktop {
+                desktopModePanel.show()
+            } else {
+                desktopModePanel.hide()
+            }
         }
 
         KeyboardShortcuts.onKeyUp(for: .toggleEnabled) { [weak self] in

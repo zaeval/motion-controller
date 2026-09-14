@@ -4,12 +4,12 @@ import Foundation
 /// volume and brightness steps, three-finger travel into zoom steps, and swipes into desktop switches. Pure, so the
 /// recordings can be replayed against it.
 ///
-/// The open palm used to start the parking gesture, and play/pause was held longer than recorded parks held the palm
-/// (0.6–0.9 s). That wasn't enough: the user's own park held the palm past the hold and paused their music (logged
-/// 2026-09-14). So a completed hold fires only once the palm comes down, and closing it into a fist instead cancels it,
-/// which still covers a habitual 🖐 before the fist now that a park is just ✊ pulled back. A pose's hold only advances
-/// while the hand is still, which is what keeps a swipe from firing it on the way past, and for a moment after a
-/// swipe no pose can fire at all: swiping rotates the hand, and the hand coming back read as a held pose.
+/// Play/pause was a held open palm, through two attempts at making that safe: it fired on a parking gesture's palm,
+/// and holding it still is what a swipe starts from. The user's call (2026-09-14) retired the hold — 🖐 pushed toward
+/// the camera and back twice does it now (`PalmPumpDetector`), and holding the palm opens desktop mode instead. No
+/// static pose is mapped to anything as a result, so the hold machinery below is what a mapping editor (plan M5)
+/// will hang off. For a moment after a swipe nothing fires at all: swiping rotates the hand, and the hand coming
+/// back read as a held pose.
 public struct ActionEvaluator: Sendable {
     public struct Settings: Codable, Equatable, Sendable {
         /// Longer than a parking gesture holds the palm.
@@ -28,10 +28,9 @@ public struct ActionEvaluator: Sendable {
         public init() {}
     }
 
-    /// What a held pose does. Fixed until the mapping editor exists (plan M5).
-    private static let poseActions: [(pose: StaticPose, action: GestureAction)] = [
-        (.openPalm, .media(.playPause)),
-    ]
+    /// What a held pose does. Nothing yet: play/pause is a pump and desktop switching is its own mode. Kept because
+    /// the mapping editor (plan M5) is where poses get their actions back.
+    private static let poseActions: [(pose: StaticPose, action: GestureAction)] = []
 
     private struct Mapped: Sendable {
         let pose: StaticPose
@@ -62,6 +61,10 @@ public struct ActionEvaluator: Sendable {
         _ reading: GestureReading?, swipe: SwipeDirection? = nil, at time: TimeInterval
     ) -> [GestureAction] {
         var actions: [GestureAction] = []
+        // 🖐 pushed out and back twice. Never right after a swipe: a hand coming back from a sweep leans in and out.
+        if let reading, reading.palmPump, time - lastSwipe > settings.poseCooldownAfterSwipe {
+            actions.append(.media(.playPause))
+        }
         if settings.swipesSwitchDesktops, let swipe, time - lastZoomStep > settings.swipeCooldownAfterZoom {
             lastSwipe = time
             actions.append(.desktop(swipe == .left ? .next : .previous))

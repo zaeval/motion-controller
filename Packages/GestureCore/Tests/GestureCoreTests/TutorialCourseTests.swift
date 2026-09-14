@@ -5,10 +5,11 @@ import Testing
 struct TutorialCourseTests {
     /// The events that clear every mission, in order.
     private static let playthrough: [TutorialEvent] = [
-        .mode(.normal, because: .fist), .desktopSwitched, .playPaused, .zoomed(in: true), .zoomed(in: false),
-        .volumeOrBrightness, .mode(.pointer, because: .doubleTap),
+        .mode(.normal, because: .fist), .playPaused, .zoomed(in: true), .zoomed(in: false), .volumeOrBrightness,
+        .mode(.desktop, because: .palmHold), .desktopSwitched, .mode(.pointer, because: .doubleTap),
     ] + Array(repeating: .cursorMoved, count: TutorialCourse.cursorFrames) + [
-        .clicked, .rightClicked, .scrolled, .dragged, .mode(.normal, because: .fist), .mode(.idle, because: .idleGesture),
+        .clicked, .rightClicked, .scrolled, .dragged, .mode(.normal, because: .fist),
+        .mode(.idle, because: .idleGesture), .faceEnrolled, .cursorCalibrated,
     ]
 
     @Test func doingEachFeatureClearsEveryMissionInOrder() {
@@ -27,12 +28,12 @@ struct TutorialCourseTests {
         }
         #expect(course.current == .enterGestures)
         #expect(course.record(.mode(.normal, because: .fist)) == .enterGestures)
-        #expect(course.current == .switchDesktop)
+        #expect(course.current == .playPause)
     }
 
     @Test func zoomNeedsBothWaysAndMovingTheCursorNeedsAMoment() {
         var course = TutorialCourse()
-        _ = Self.playthrough.prefix(3).map { course.record($0) }
+        _ = Self.playthrough.prefix(2).map { course.record($0) }
         #expect(course.current == .zoom)
         #expect(course.record(.zoomed(in: true)) == nil)
         #expect(course.record(.zoomed(in: true)) == nil)
@@ -40,6 +41,8 @@ struct TutorialCourseTests {
         #expect(course.record(.zoomed(in: false)) == .zoom)
 
         _ = course.record(.volumeOrBrightness)
+        _ = course.record(.mode(.desktop, because: .palmHold))
+        _ = course.record(.desktopSwitched)
         _ = course.record(.mode(.pointer, because: .doubleTap))
         #expect(course.current == .moveCursor)
         let early = (1..<TutorialCourse.cursorFrames).compactMap { _ in course.record(.cursorMoved) }
@@ -50,7 +53,7 @@ struct TutorialCourseTests {
     @Test func skippingMovesOnWithoutCountingAsCleared() {
         var course = TutorialCourse()
         course.skip()
-        #expect(course.current == .switchDesktop)
+        #expect(course.current == .playPause)
         #expect(!course.isCleared(.enterGestures))
         for _ in TutorialStep.allCases { course.skip() }
         #expect(course.isFinished)
@@ -59,8 +62,18 @@ struct TutorialCourseTests {
     }
 
     @Test func eachMissionSaysWhichModeItNeeds() {
-        #expect(TutorialStep.switchDesktop.requiredMode == .normal)
+        // Sweeping is only heard in the mode a held palm opens.
+        #expect(TutorialStep.switchDesktop.requiredMode == .desktop)
+        #expect(TutorialStep.playPause.requiredMode == .normal)
         #expect(TutorialStep.drag.requiredMode == .pointer)
         #expect(TutorialStep.enterCursor.requiredMode == nil)
+        #expect(TutorialStep.enterDesktop.requiredMode == nil)
+    }
+
+    @Test func theLastTwoMissionsOpenPanelsRatherThanWaitingForAGesture() {
+        #expect(TutorialStep.enrollFace.opensPanel)
+        #expect(TutorialStep.calibrateCursor.opensPanel)
+        #expect(TutorialStep.allCases.suffix(2) == [.enrollFace, .calibrateCursor])
+        #expect(!TutorialStep.switchDesktop.opensPanel)
     }
 }

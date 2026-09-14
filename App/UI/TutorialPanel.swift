@@ -12,6 +12,9 @@ final class TutorialPanelController: NSObject, NSWindowDelegate {
     private let pipeline: Pipeline
     private var session: TutorialSession?
     private var onClose: (() -> Void)?
+    /// Set by the app: the last two missions open its enrollment and calibration panels.
+    var onEnroll: (() -> Void)?
+    var onCalibrate: (() -> Void)?
 
     init(pipeline: Pipeline) {
         self.pipeline = pipeline
@@ -42,9 +45,13 @@ final class TutorialPanelController: NSObject, NSWindowDelegate {
         pipeline.onTutorialEvent = { [weak session] event in
             session?.record(event)
         }
-        panel.contentView = NSHostingView(rootView: TutorialView(pipeline: pipeline, session: session) { [weak self] in
-            self?.panel.close()
-        })
+        panel.contentView = NSHostingView(rootView: TutorialView(
+            pipeline: pipeline,
+            session: session,
+            onEnroll: { [weak self] in self?.onEnroll?() },
+            onCalibrate: { [weak self] in self?.onCalibrate?() },
+            close: { [weak self] in self?.panel.close() }
+        ))
         panel.center()
         panel.makeKeyAndOrderFront(nil)
         NSApp.activate()
@@ -89,8 +96,11 @@ extension TutorialStep {
     var symbol: String {
         switch self {
         case .enterGestures, .backToGestures: "✊"
+        case .enterDesktop: "🖐"
         case .switchDesktop: "🖐↔︎"
         case .playPause: "🖐⏯"
+        case .enrollFace: "🙂"
+        case .calibrateCursor: "🎯"
         case .zoom: "🤟"
         case .volumeBrightness: "🤏"
         case .enterCursor: "☝️"
@@ -106,8 +116,11 @@ extension TutorialStep {
     var title: String {
         switch self {
         case .enterGestures: "제스처 모드 들어가기"
+        case .enterDesktop: "데스크탑 전환 모드 들어가기"
         case .switchDesktop: "데스크톱 전환"
         case .playPause: "재생/정지"
+        case .enrollFace: "얼굴 등록 (화면 잠금)"
+        case .calibrateCursor: "커서 영역 보정"
         case .zoom: "확대/축소"
         case .volumeBrightness: "볼륨·밝기"
         case .enterCursor: "커서 모드 들어가기"
@@ -124,8 +137,11 @@ extension TutorialStep {
     var instruction: String {
         switch self {
         case .enterGestures, .backToGestures: "주먹을 쥐고 잠깐 그대로 있어 보세요."
-        case .switchDesktop: "손바닥을 카메라에 보인 채 0.3초 멈췄다가, 옆으로 크게 쓸어 보세요."
-        case .playPause: "손바닥을 1.2초 들고 있다가 내려 보세요."
+        case .enterDesktop: "손바닥을 카메라에 보인 채 잠시 멈춰 보세요. 화면에 보라색 테두리가 생깁니다."
+        case .switchDesktop: "그대로 손을 옆으로 크게 쓸어 보세요."
+        case .playPause: "손바닥을 펴고, 카메라 쪽으로 두 번 빠르게 팡팡 움직여 보세요."
+        case .enrollFace: "얼굴을 등록하면 사람이 없을 때 화면이 까매지고 잠깁니다. 건너뛰어도 됩니다."
+        case .calibrateCursor: "화면 네 모서리를 검지로 가리키면 커서가 손 위치에 정확히 붙습니다."
         case .zoom: "세 손가락을 펴고 위로 올려 확대, 아래로 내려 축소해 보세요."
         case .volumeBrightness: "엄지와 검지를 붙인 채 위아래로 움직이면 볼륨, 좌우로 움직이면 밝기가 바뀌어요."
         case .enterCursor: "검지를 펴고 두 번 톡톡 굽혀 보세요."
@@ -141,8 +157,11 @@ extension TutorialStep {
     var tip: String? {
         switch self {
         case .enterGestures, .backToGestures: "오버레이의 '✊ 제스처 모드로 전환' 막대가 다 차면 돼요."
-        case .switchDesktop: "왼쪽으로 쓸면 다음, 오른쪽으로 쓸면 이전 데스크톱이에요. 오버레이에 '↔ 옆으로 쓸면 데스크톱 전환'이 뜨면 준비된 거예요."
-        case .playPause: "막대가 다 차고 '손을 내리면 실행'이 뜨면 내리세요. 내리기 전에 주먹을 쥐면 취소돼요."
+        case .enterDesktop: "이 모드에서는 좌우로 쓰는 것만 인식해요. 나올 때는 주먹을 쥐거나 검지로 톡톡 하세요."
+        case .switchDesktop: "왼쪽으로 쓸면 다음, 오른쪽으로 쓸면 이전 데스크톱이에요. 한 번 더 하려면 손바닥을 잠깐 멈추면 돼요."
+        case .playPause: "손을 앞으로 쭉 내밀 필요는 없어요. 손바닥을 펴고 가볍게 두 번 튕기면 됩니다. 주먹을 쥐면 취소돼요."
+        case .enrollFace: "여러 번 등록하면 인식이 좋아져요. 메뉴에서 언제든 다시 할 수 있어요."
+        case .calibrateCursor: "커서가 손끝을 따라가요. 메뉴의 '커서 영역 보정'으로 언제든 다시 할 수 있어요."
         case .zoom: "둘 다 하면 클리어예요. 확대가 남으면 ⌥⌘8로 끄세요. 화면이 안 바뀌면 시스템 설정 > 손쉬운 사용 > 확대/축소에서 키보드 단축키를 켜 주세요."
         case .volumeBrightness: "어느 쪽이든 한 번 바뀌면 클리어예요."
         case .enterCursor: "한 번 톡 하면 오버레이에 '한 번 더 톡'이 떠요."
@@ -157,6 +176,8 @@ extension TutorialStep {
 struct TutorialView: View {
     let pipeline: Pipeline
     let session: TutorialSession
+    let onEnroll: () -> Void
+    let onCalibrate: () -> Void
     let close: () -> Void
 
     private var toggleShortcut: String {
@@ -226,6 +247,48 @@ struct TutorialView: View {
         }
     }
 
+    /// The last two missions aren't gestures: they open a panel. Enrolling needs the face model, so when it isn't
+    /// installed the mission shows how to get it instead of a button that could only fail.
+    @ViewBuilder
+    private func setup(_ step: TutorialStep) -> some View {
+        if step == .enrollFace, !pipeline.faceModelInstalled {
+            VStack(alignment: .leading, spacing: 8) {
+                Text("얼굴 인식 모델이 없어서 등록을 할 수 없어요.")
+                    .font(.headline)
+                Text("라이선스 때문에 저장소에 넣지 않았습니다 (약 44MB). 터미널에 아래를 붙여넣고, 앱을 다시 빌드하면 등록이 열립니다.")
+                    .font(.callout)
+                    .foregroundStyle(.secondary)
+                    .wrapping()
+                Text(Self.modelInstall)
+                    .font(.system(.caption, design: .monospaced))
+                    .textSelection(.enabled)
+                    .padding(8)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .background(Color.secondary.opacity(0.12), in: RoundedRectangle(cornerRadius: 6))
+                HStack {
+                    Button("명령 복사") {
+                        NSPasteboard.general.clearContents()
+                        NSPasteboard.general.setString(Self.modelInstall, forType: .string)
+                    }
+                    Button("건너뛰기") { session.skip() }
+                }
+            }
+        } else if step == .enrollFace {
+            Button("얼굴 등록 시작") { onEnroll() }
+                .controlSize(.large)
+        } else if step == .calibrateCursor {
+            Button("커서 영역 보정 시작") { onCalibrate() }
+                .controlSize(.large)
+        }
+    }
+
+    /// The README's step 2, as one paste.
+    private static let modelInstall = """
+        curl -L -o /tmp/AdaFace_IR18.mlpackage.zip \
+          https://github.com/john-rocky/CoreML-Models/releases/download/adaface-v1/AdaFace_IR18.mlpackage.zip
+        mkdir -p App/Vision/Models && unzip -o /tmp/AdaFace_IR18.mlpackage.zip -d App/Vision/Models
+        """
+
     private func mission(_ step: TutorialStep, course: TutorialCourse) -> some View {
         VStack(alignment: .leading, spacing: 12) {
             if let cleared = session.justCleared {
@@ -248,6 +311,9 @@ struct TutorialView: View {
             }
             if step == .moveCursor {
                 ProgressView(value: Double(min(course.cursorFrames, TutorialCourse.cursorFrames)), total: Double(TutorialCourse.cursorFrames))
+            }
+            if step.opensPanel {
+                setup(step)
             }
             if let tip = step.tip {
                 Text(tip).font(.callout).foregroundStyle(.secondary).wrapping()

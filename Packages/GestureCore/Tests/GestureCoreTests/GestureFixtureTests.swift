@@ -124,12 +124,13 @@ struct GestureFixtureTests {
         }
     }
 
-    /// Replays every recording through gesture mode: only the swipes may command anything, and the parking
-    /// gesture's palm must never reach play/pause. Volume and brightness steps come from a deliberate pinch drag.
+    /// Replays every recording the way `Pipeline` dispatches: held poses in gesture mode, sweeps in desktop mode,
+    /// and nothing at all on the frame a mode changes. Only the swipe recordings may command anything.
     ///
-    /// Actions stop the moment the mode changes, as they do in `Pipeline`, which evaluates them only in gesture
-    /// mode and skips the frame a mode change lands on. That gate is what a parking gesture relies on: one recorded
-    /// park folds the palm sideways hard enough to pass for a gentle swipe 0.3 s *after* it has already parked.
+    /// These clips were all recorded before a swipe needed a held palm, so most of them never reach desktop mode and
+    /// rightly fire nothing — `SwipeFixtureTests.recordedStrokesFromAHeldPalmSwitchTheRightWay` is what holds the
+    /// detector to the strokes themselves. What this guards is the other direction: that a tap, a scroll, a click, a
+    /// cursor move or a park never reaches an action.
     @Test func recordedGesturesOnlyFireTheActionsTheyMean() throws {
         for recording in try SwipeFixtureTests.recordings(containing: "") {
             var analyzer = GestureAnalyzer()
@@ -139,9 +140,16 @@ struct GestureFixtureTests {
             func feed(_ hand: HandFrame?, personPresent: Bool, at time: TimeInterval) {
                 let reading = analyzer.update(hand: hand, at: time)
                 let changed = modes.update(reading, personPresent: personPresent, at: time)
-                guard changed == nil, modes.mode == .normal else { return }
-                commands += evaluator.update(reading, swipe: analyzer.lastSwipe, at: time)
-                    .filter { !$0.isContinuousStep }
+                guard changed == nil else { return }
+                switch modes.mode {
+                case .normal:
+                    commands += evaluator.update(reading, at: time).filter { !$0.isContinuousStep }
+                case .desktop:
+                    if let swipe = analyzer.lastSwipe {
+                        commands += evaluator.update(nil, swipe: swipe, at: time).filter { !$0.isContinuousStep }
+                    }
+                default: break
+                }
             }
             for frame in recording.frames {
                 feed(SwipeFixtureTests.trackedHand(in: frame), personPresent: frame.hasPerson, at: frame.timestamp)
@@ -165,10 +173,11 @@ struct GestureFixtureTests {
         }
     }
 
-    /// The user's own park held the palm past play/pause's hold before folding it, and paused their music (logged
-    /// 2026-09-14). Each recorded park, replayed with its first palm frame held 1.5 s longer, must still park and never
-    /// play or pause anything.
-    @Test func aParkThatHoldsThePalmLongerStillNeverPlaysOrPauses() throws {
+    /// The user's own park held the palm past play/pause's old hold before folding it, and paused their music
+    /// (logged 2026-09-14). Play/pause is a pump now and a held palm opens desktop mode, so each recorded park —
+    /// replayed with its first palm frame held 1.5 s longer, long enough to reach that mode — must still park, and
+    /// must not play, pause or switch a desktop on the way.
+    @Test func aParkThatLingersOnThePalmStillOnlyParks() throws {
         let recordings = try SwipeFixtureTests.recordings(containing: "IDLE")
         #expect(!recordings.isEmpty)
         for recording in recordings {
@@ -187,14 +196,22 @@ struct GestureFixtureTests {
             var evaluator = ActionEvaluator()
             var modes = ModeController(mode: .normal)
             var commands: [GestureAction] = []
-            var holdCompleted = false
-            // Actions only in gesture mode, and not on the frame the mode changes, as in `Pipeline`.
+            var reachedDesktopMode = false
+            // Actions as `Pipeline` dispatches them: poses in gesture mode, sweeps in desktop mode, and never on the
+            // frame the mode itself changes.
             func feed(_ hand: HandFrame?, personPresent: Bool, at time: TimeInterval) {
                 let reading = analyzer.update(hand: hand, at: time)
                 let changed = modes.update(reading, personPresent: personPresent, at: time)
-                guard changed == nil, modes.mode == .normal else { return }
-                commands += evaluator.update(reading, swipe: analyzer.lastSwipe, at: time)
-                holdCompleted = holdCompleted || evaluator.pending(at: time)?.progress == 1
+                reachedDesktopMode = reachedDesktopMode || modes.mode == .desktop
+                guard changed == nil else { return }
+                switch modes.mode {
+                case .normal: commands += evaluator.update(reading, at: time)
+                case .desktop:
+                    if let swipe = analyzer.lastSwipe {
+                        commands += evaluator.update(nil, swipe: swipe, at: time)
+                    }
+                default: break
+                }
             }
             for (frame, time) in timeline {
                 feed(SwipeFixtureTests.trackedHand(in: frame), personPresent: frame.hasPerson, at: time)
@@ -203,8 +220,8 @@ struct GestureFixtureTests {
             for step in 1...45 {
                 feed(nil, personPresent: false, at: last + Double(step) / 30)
             }
-            // Otherwise the stretch proves nothing: the palm has to have been held long enough to play or pause.
-            #expect(holdCompleted, "\(recording.name)")
+            // Otherwise the stretch proves nothing: the palm has to have been out long enough to mean something.
+            #expect(reachedDesktopMode, "\(recording.name)")
             #expect(!commands.contains(.media(.playPause)), "\(recording.name): \(commands)")
             // The palm held that long arms a swipe too; folding it to park must not switch desktops.
             #expect(!commands.contains { if case .desktop = $0 { true } else { false } }, "\(recording.name): \(commands)")

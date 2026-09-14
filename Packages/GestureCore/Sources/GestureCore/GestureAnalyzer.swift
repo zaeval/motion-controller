@@ -34,6 +34,8 @@ public struct GestureReading: Sendable {
     public var isTapDipping: Bool
     /// A fist pulled back, completed on this frame.
     public var idleGesture: Bool
+    /// 🖐 pushed toward the camera and back twice, completed on this frame: play/pause.
+    public var palmPump: Bool
     /// The index is held bent toward the camera: the hand moves the cursor.
     public var isIndexBent: Bool
     /// Index tip → knuckle along the palm, in knuckle spans, and how far it reaches when straight; for tuning the bend.
@@ -56,6 +58,7 @@ public struct GestureAnalyzer: Sendable {
         public var continuous = PinchAxisControl.Settings()
         public var tap = TapDetector.Settings()
         public var idle = IdleGestureDetector.Settings()
+        public var pump = PalmPumpDetector.Settings()
         public var bend = IndexBendDetector.Settings()
         public var zoom = ZoomControl.Settings()
         /// Only a hand whose anchor is above this (Vision-normalized y) counts as raised. Off: the user asked
@@ -85,6 +88,7 @@ public struct GestureAnalyzer: Sendable {
     private var taps = TapDetector()
     private var idle = IdleGestureDetector()
     private var indexBend = IndexBendDetector()
+    private var palmPump = PalmPumpDetector()
     private var zoom = ZoomControl()
     private var lastHandTime: TimeInterval = -.infinity
 
@@ -107,6 +111,7 @@ public struct GestureAnalyzer: Sendable {
             lastSwipe = swipe.update(nil, at: time)
             _ = taps.update(nil, at: time)
             _ = idle.update(nil, at: time)
+            _ = palmPump.update(nil, at: time)
             _ = indexBend.update(nil, at: time)
             zoom.reset()
             if time - lastHandTime > settings.handLostReset {
@@ -161,10 +166,22 @@ public struct GestureAnalyzer: Sendable {
             IdleGestureDetector.Sample(fist: isFist, handScale: features.scale),
             at: time
         )
+        let pumped = palmPump.update(
+            PalmPumpDetector.Sample(
+                handScale: features.scale, anchor: anchor, openPalm: pose == .openPalm, fist: isFist
+            ),
+            at: time
+        )
 
-        let pointer = hand.normalizedPosition(of: .wrist).flatMap { wrist in
-            hand.normalizedPosition(of: .middleMCP).map { wrist.midpoint(with: $0) }
-        }
+        // The user's call (2026-09-14): the cursor goes where the index tip is, whenever the tip can be made out.
+        // The palm midpoint is the fallback, because it survives a blurred or folded hand that loses the tip — it is
+        // steadier, which is why it used to be the pointer, and the known cost of the tip is that a pinch moves it,
+        // so the cursor shifts a little as a drag starts. Both points run through the same One Euro filter, so
+        // falling back mid-motion is damped rather than a jump.
+        let pointer = hand.normalizedPosition(of: .indexTip)
+            ?? hand.normalizedPosition(of: .wrist).flatMap { wrist in
+                hand.normalizedPosition(of: .middleMCP).map { wrist.midpoint(with: $0) }
+            }
 
         return GestureReading(
             timestamp: time,
@@ -189,6 +206,7 @@ public struct GestureAnalyzer: Sendable {
             tap: tap,
             isTapDipping: taps.isDipping,
             idleGesture: idleGesture,
+            palmPump: pumped,
             isIndexBent: isIndexBent,
             indexReachAlongPalm: indexReachAlongPalm,
             straightIndexReach: indexBend.straightReach
@@ -204,6 +222,7 @@ public struct GestureAnalyzer: Sendable {
         taps.reset()
         idle.reset()
         indexBend.reset()
+        palmPump.reset()
         zoom.reset()
         lastHandTime = -.infinity
     }
@@ -214,6 +233,7 @@ public struct GestureAnalyzer: Sendable {
         axisControl.settings = settings.continuous
         taps.settings = settings.tap
         idle.settings = settings.idle
+        palmPump.settings = settings.pump
         indexBend.settings = settings.bend
         zoom.settings = settings.zoom
     }

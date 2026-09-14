@@ -48,7 +48,9 @@ final class Pipeline {
         .appending(path: "MotionController/Fixtures", directoryHint: .isDirectory)
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "Pipeline")
     /// Where a box the user calibrated is kept between launches.
-    private static let boxKey = "pointerBox"
+    /// Bumped for the index-tip pointer (2026-09-14): a box calibrated against the palm midpoint puts the tip's
+    /// corners somewhere else entirely, and a silently wrong box is worse than asking for the four corners again.
+    private static let boxKey = "pointerBox2"
     /// Whether the dark screen locks, once a face is enrolled.
     private static let lockKey = "screenLock"
     /// Photos of whoever tried to use the Mac while it was locked.
@@ -78,6 +80,10 @@ final class Pipeline {
     /// Blacks the screen out once nobody has been in front of the camera for a while.
     @ObservationIgnored private let screen = ScreenKeeper()
     @ObservationIgnored private var screenPresence = ScreenPresence()
+    @ObservationIgnored private var sceneLight = SceneLight()
+    /// MC_LIGHT_TEST=dark holds the app in the too-dark state from launch, so the hold can be checked without
+    /// turning the lights off.
+    @ObservationIgnored private let forcedDark = ProcessInfo.processInfo.environment["MC_LIGHT_TEST"] == "dark"
     /// Holds input back while the dark screen is locked, and asks for Touch ID or the password.
     @ObservationIgnored private let screenLock = ScreenLock()
     @ObservationIgnored private let faceSource = FaceSource()
@@ -97,6 +103,8 @@ final class Pipeline {
     @ObservationIgnored var onTutorialEvent: ((TutorialEvent) -> Void)?
     /// Shows the alert for photos kept while locked, once the screen is back.
     @ObservationIgnored var onIntruderPhotos: ((Int, URL?) -> Void)?
+    /// Called on every mode change, so the app can put up the panel that belongs to a mode.
+    @ObservationIgnored var onModeChange: ((InteractionMode) -> Void)?
     /// The frame time analysis last ran at, for things that happen between frames.
     @ObservationIgnored private var lastAnalyzedTime: TimeInterval = 0
     /// `MC_LOCK_TEST_NO_FACE`: the self-test lock ignores the owner's face, so what happens to someone else can be
@@ -110,6 +118,10 @@ final class Pipeline {
     private(set) var stats = Stats()
     private(set) var recentEvents: [MotionLogEntry] = []
     private(set) var swipeCounts: [SwipeDirection: Int] = [:]
+    /// The way the last sweep went, for the desktop-mode panel's arrows. Cleared a moment later so the arrow lights
+    /// up per sweep rather than staying on.
+    private(set) var lastSwipe: SwipeDirection?
+    @ObservationIgnored private var lastSwipeClear: Task<Void, Never>?
     /// Short-lived text the overlay shows right after a motion gesture or click.
     private(set) var flash: String?
     /// Idle, gesture mode, or pointer mode where the hand drives the cursor.
@@ -129,6 +141,11 @@ final class Pipeline {
     private(set) var swipeArmed = false
     /// Someone is in front of the camera.
     private(set) var personPresent = false
+    /// Too little light to believe the camera: the screen is left exactly as it is and no gesture acts. See
+    /// `SceneLight`.
+    private(set) var sceneIsDark = false
+    /// Mean luma of the last frame, for the debug preview.
+    private(set) var sceneLuma: Double?
     private(set) var accessibilityTrusted = AccessibilityPermission.isTrusted
     /// The latest Vision failure, cleared after two seconds without one.
     private(set) var visionError: String?
@@ -206,6 +223,9 @@ final class Pipeline {
             handSource.process(buffer, at: time)
             faceSource.process(buffer, at: time)
             snapshots.process(buffer, at: time)
+        }
+        camera.onLight = { [weak self] luma, time in
+            Task { @MainActor in self?.receiveLight(luma, at: time) }
         }
         snapshots.setHandler { [weak self] tag, data in
             Task { @MainActor in self?.receivePhoto(data, attempt: tag) }
@@ -303,6 +323,9 @@ final class Pipeline {
         lastPersonTime = -.infinity
         screen.release()
         screenPresence = ScreenPresence()
+        sceneLight = SceneLight()
+        sceneIsDark = forcedDark
+        sceneLuma = nil
         actionEvaluator.reset()
         pendingAction = nil
         camera.stop()
@@ -552,6 +575,7 @@ final class Pipeline {
         enrollmentStatus = .saved
         enrollmentHint = nil
         updateFaceChecks()
+        onTutorialEvent?(.faceEnrolled)
         // The first face turns the lock on, as enrolling was for; later ones leave the menu's choice alone.
         if wasEmpty {
             lockEnabled = true
@@ -582,6 +606,10 @@ final class Pipeline {
         try FileManager.default.createDirectory(at: Self.facesURL.deletingLastPathComponent(), withIntermediateDirectories: true)
         try JSONEncoder().encode(faces).write(to: Self.facesURL, options: .atomic)
     }
+
+    /// Whether the face model is in the app bundle. Without it there is nothing to enrol into, so the tutorial
+    /// offers the download instead of the panel.
+    var faceModelInstalled: Bool { faceSource.isAvailable }
 
     /// Face checks run only while something needs them.
     private func updateFaceChecks() {
@@ -691,6 +719,24 @@ final class Pipeline {
         }
     }
 
+    /// Takes one frame's light. Crossing into the dark holds the screen where it is; coming back out starts the
+    /// absence clock over, because `ScreenPresence` was not fed while dark and still remembers whoever was last
+    /// seen before the lights went — without this, the first lit frame reads as a long absence and dims and locks
+    /// the screen just as someone sits down.
+    private func receiveLight(_ luma: Double, at time: TimeInterval) {
+        sceneLuma = luma
+        guard let dark = sceneLight.update(luma: luma, at: time), !forcedDark else { return }
+        sceneIsDark = dark
+        if !dark {
+            _ = screenPresence.unlock(at: time)
+        }
+        logMotion(dark ? "🌑 조도 부족 · 일시 중지" : "💡 조도 회복 · 다시 인식")
+        Self.logger.notice("""
+            Scene \(dark ? "dark" : "lit", privacy: .public) at luma \
+            \(luma, format: .fixed(precision: 3), privacy: .public)
+            """)
+    }
+
     /// When a body was last detected. HandSource (B) runs body pose slower than hand pose, so presence holds briefly.
     @ObservationIgnored private var lastPersonTime: TimeInterval = -.infinity
 
@@ -715,6 +761,15 @@ final class Pipeline {
         // password (receiveFace, ScreenLock) end it. Nothing else is recognized meanwhile.
         guard !isLocked else {
             watchIntruders(.tick)
+            return
+        }
+
+        // Too little light to believe any of it: whatever the screen is doing, it keeps doing. An unlit room reads
+        // as an empty one, so acting on it would black out and lock the screen of someone sitting right there,
+        // whose face is the way back in and is exactly what the camera can't make out. Nothing is dimmed, locked or
+        // woken until the light is back, which also means the Mac's own idle and sleep timers apply again meanwhile.
+        // A screen already dark and locked when the light went stays that way; Touch ID and the password still get in.
+        if sceneIsDark {
             return
         }
 
@@ -794,24 +849,36 @@ final class Pipeline {
             }
 
         case .normal:
-            if analyzer.isSwipeArmed != swipeArmed {
-                swipeArmed = analyzer.isSwipeArmed
-            }
-            let actions = actionEvaluator.update(reading, swipe: analyzer.lastSwipe, at: time)
+            // Swipes belong to desktop mode now, so the palm this mode watches for is only on its way there.
+            let actions = actionEvaluator.update(reading, at: time)
             let pending = actionEvaluator.pending(at: time).map {
                 PendingAction(pose: $0.pose, action: $0.action, progress: $0.progress)
             }
             if pending != pendingAction {
                 pendingAction = pending
             }
-            if let swipe = analyzer.lastSwipe {
-                swipeCounts[swipe, default: 0] += 1
-                logMotion(swipe == .left ? "👋 ← 왼쪽 스와이프" : "👋 → 오른쪽 스와이프")
-            }
             if let reading {
                 logPinchWhenItEnds(reading)
             }
             dispatch(actions)
+
+        case .desktop:
+            if analyzer.isSwipeArmed != swipeArmed {
+                swipeArmed = analyzer.isSwipeArmed
+            }
+            // Only the sweep. No poses, no pinch drags, no zoom: the user's call (2026-09-14) was that once the
+            // palm has opened this mode, left and right are the only things it should hear.
+            guard let swipe = analyzer.lastSwipe else { break }
+            swipeCounts[swipe, default: 0] += 1
+            logMotion(swipe == .left ? "👋 ← 왼쪽 스와이프" : "👋 → 오른쪽 스와이프")
+            lastSwipe = swipe
+            lastSwipeClear?.cancel()
+            lastSwipeClear = Task { [weak self] in
+                try? await Task.sleep(for: .milliseconds(700))
+                guard !Task.isCancelled else { return }
+                self?.lastSwipe = nil
+            }
+            dispatch(actionEvaluator.update(nil, swipe: swipe, at: time))
 
         case .idle:
             break
@@ -827,6 +894,7 @@ final class Pipeline {
         calibrationProgress = current.progress
         calibrationCount = current.capturedCount
         guard let finished else { return }
+        onTutorialEvent?(.cursorCalibrated)
         pointer.settings.box = finished
         if let data = try? JSONEncoder().encode(finished) {
             UserDefaults.standard.set(data, forKey: Self.boxKey)
@@ -898,8 +966,13 @@ final class Pipeline {
         switch newMode {
         case .pointer: logMotion("☝️ 커서 모드" + because)
         case .normal: logMotion("✊ 제스처 모드" + because)
+        case .desktop: logMotion("🖐 데스크탑 전환 모드" + because)
         case .idle: logMotion("💤 IDLE" + because)
         }
+        if newMode != .desktop, swipeArmed {
+            swipeArmed = false
+        }
+        onModeChange?(newMode)
         guard newMode == .pointer else { return }
         accessibilityTrusted = AccessibilityPermission.isTrusted
         if !accessibilityTrusted, !promptedForAccessibility {

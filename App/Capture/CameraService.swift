@@ -11,6 +11,8 @@ final class CameraService: NSObject, @unchecked Sendable {
 
     /// Called on the capture queue with the un-mirrored frame and its presentation time in seconds.
     var onFrame: (@Sendable (CVPixelBuffer, TimeInterval) -> Void)?
+    /// Mean luma of the frame, 0–1. Called on the capture queue with every frame.
+    var onLight: (@Sendable (Double, TimeInterval) -> Void)?
 
     let session = AVCaptureSession()
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "Camera")
@@ -20,6 +22,7 @@ final class CameraService: NSObject, @unchecked Sendable {
     private var input: AVCaptureDeviceInput?
     /// Read and written only on `queue`.
     private var loggedFrameSize = false
+    private var lastLightLog = -TimeInterval.infinity
 
     static func availableDevices() -> [Device] {
         AVCaptureDevice.DiscoverySession(
@@ -146,6 +149,37 @@ final class CameraService: NSObject, @unchecked Sendable {
     }
 }
 
+extension CameraService {
+    /// Mean luma of the frame, 0–1, from the Y plane of the 420 buffer the session is configured for. Every eighth
+    /// pixel of every eighth row is enough — this runs on the capture queue at 30 fps — and returns nil for a
+    /// buffer that isn't planar, so a format change can't report a black room.
+    static func meanLuma(of buffer: CVPixelBuffer) -> Double? {
+        guard CVPixelBufferGetPlaneCount(buffer) > 0,
+              CVPixelBufferLockBaseAddress(buffer, .readOnly) == kCVReturnSuccess
+        else { return nil }
+        defer { CVPixelBufferUnlockBaseAddress(buffer, .readOnly) }
+        guard let base = CVPixelBufferGetBaseAddressOfPlane(buffer, 0) else { return nil }
+        let width = CVPixelBufferGetWidthOfPlane(buffer, 0)
+        let height = CVPixelBufferGetHeightOfPlane(buffer, 0)
+        let stride = CVPixelBufferGetBytesPerRowOfPlane(buffer, 0)
+        guard width > 0, height > 0, stride >= width else { return nil }
+        let step = 8
+        let pixels = base.assumingMemoryBound(to: UInt8.self)
+        var total = 0
+        var counted = 0
+        for y in Swift.stride(from: 0, to: height, by: step) {
+            let row = pixels + y * stride
+            for x in Swift.stride(from: 0, to: width, by: step) {
+                total += Int(row[x])
+                counted += 1
+            }
+        }
+        guard counted > 0 else { return nil }
+        // The session asks for full-range 420, so luma uses the whole 0–255.
+        return Double(total) / Double(counted) / 255
+    }
+}
+
 extension CameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
     func captureOutput(_ output: AVCaptureOutput, didOutput sampleBuffer: CMSampleBuffer, from connection: AVCaptureConnection) {
         guard let pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer) else { return }
@@ -153,6 +187,14 @@ extension CameraService: AVCaptureVideoDataOutputSampleBufferDelegate {
             loggedFrameSize = true
             Self.logger.notice("Camera frames \(CVPixelBufferGetWidth(pixelBuffer))x\(CVPixelBufferGetHeight(pixelBuffer))")
         }
-        onFrame?(pixelBuffer, CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds)
+        let time = CMSampleBufferGetPresentationTimeStamp(sampleBuffer).seconds
+        if let luma = Self.meanLuma(of: pixelBuffer) {
+            if time - lastLightLog >= 5 {
+                lastLightLog = time
+                Self.logger.notice("Light luma \(luma, format: .fixed(precision: 3), privacy: .public)")
+            }
+            onLight?(luma, time)
+        }
+        onFrame?(pixelBuffer, time)
     }
 }

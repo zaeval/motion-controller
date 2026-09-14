@@ -75,6 +75,7 @@ struct OverlayView: View {
         case .idle: .gray
         case .normal: .green
         case .pointer: pipeline.pointerStatus.pressed ? .orange : .blue
+        case .desktop: .purple
         }
     }
 
@@ -84,7 +85,15 @@ struct OverlayView: View {
         case .idle: return idleDetail
         case .normal: return gestureDetail
         case .pointer: return pointerDetail
+        case .desktop: return desktopDetail
         }
+    }
+
+    private var desktopDetail: String {
+        if let flash = pipeline.flash { return flash }
+        if pipeline.awaitingSecondTap { return "☝️ 한 번 더 톡 → 커서 모드" }
+        if pipeline.modeProgress > 0 { return "✊ 제스처 모드로 전환 \(progressBar(pipeline.modeProgress))" }
+        return pipeline.swipeArmed ? "🖐 준비됨 · ← → 쓸기" : "🖐 손바닥을 잠시 멈추고 ← → 쓸기"
     }
 
     private var idleDetail: String {

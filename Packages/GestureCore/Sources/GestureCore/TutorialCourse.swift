@@ -13,21 +13,35 @@ public enum TutorialEvent: Equatable, Sendable {
     case rightClicked
     case scrolled
     case dragged
+    /// A face finished enrolling.
+    case faceEnrolled
+    /// All four cursor corners were captured.
+    case cursorCalibrated
 }
 
 /// The tutorial's missions, in the order they're played: every gesture and mode, each cleared by actually doing it.
 public enum TutorialStep: String, CaseIterable, Sendable {
-    case enterGestures, switchDesktop, playPause, zoom, volumeBrightness
+    case enterGestures, playPause, zoom, volumeBrightness
+    case enterDesktop, switchDesktop
     case enterCursor, moveCursor, click, rightClick, scroll, drag
     case backToGestures, park
+    /// The two things worth setting up once, offered at the end rather than taught: they open their own panels.
+    case enrollFace, calibrateCursor
 
-    /// The mode the mission's gesture works in; nil when it's the one that changes the mode.
+    /// The mode the mission's gesture works in; nil when it's the one that changes the mode, or when it isn't a
+    /// gesture at all.
     public var requiredMode: InteractionMode? {
         switch self {
-        case .switchDesktop, .playPause, .zoom, .volumeBrightness: .normal
+        case .playPause, .zoom, .volumeBrightness: .normal
+        case .switchDesktop: .desktop
         case .moveCursor, .click, .rightClick, .scroll, .drag, .backToGestures: .pointer
-        case .enterGestures, .enterCursor, .park: nil
+        case .enterGestures, .enterDesktop, .enterCursor, .park, .enrollFace, .calibrateCursor: nil
         }
+    }
+
+    /// Steps that open a panel of their own instead of waiting for a gesture.
+    public var opensPanel: Bool {
+        self == .enrollFace || self == .calibrateCursor
     }
 }
 
@@ -65,6 +79,10 @@ public struct TutorialCourse: Equatable, Sendable {
         case (.enterGestures, .mode(.normal, because: .fist)), (.backToGestures, .mode(.normal, because: .fist)):
             clears = true
         case (.enterCursor, .mode(.pointer, because: .doubleTap)), (.park, .mode(.idle, because: .idleGesture)):
+            clears = true
+        case (.enterDesktop, .mode(.desktop, because: .palmHold)):
+            clears = true
+        case (.enrollFace, .faceEnrolled), (.calibrateCursor, .cursorCalibrated):
             clears = true
         case (.switchDesktop, .desktopSwitched), (.playPause, .playPaused), (.volumeBrightness, .volumeOrBrightness),
              (.click, .clicked), (.rightClick, .rightClicked), (.scroll, .scrolled), (.drag, .dragged):

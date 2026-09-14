@@ -12,7 +12,7 @@ struct ModeControllerTests {
             timestamp: time, chirality: .right, pose: fist ? .fist : pose, isPinching: pose == .pinch, pinchAxis: nil,
             pinchTotals: [:], palmSpeed: 0, isSweeping: false, isStill: true, inActiveRegion: true, openness: nil,
             palmFacesCamera: true, extendedFingers: [], steps: [], zoomStep: 0, pointer: Vec2(0.5, 0.6), handScale: 0.15,
-            imageAspect: 16.0 / 9, isFist: fist, tap: tap, isTapDipping: false, idleGesture: idleGesture,
+            imageAspect: 16.0 / 9, isFist: fist, tap: tap, isTapDipping: false, idleGesture: idleGesture, palmPump: false,
             isIndexBent: false, indexReachAlongPalm: nil, straightIndexReach: nil
         )
     }
@@ -89,7 +89,8 @@ struct ModeControllerTests {
 
     @Test func nobodyInFrontParksRecognition() {
         var controller = ModeController()
-        #expect(feed(&controller, from: 0, seconds: 1.0) { reading(.openPalm, at: $0) }.isEmpty)
+        // Not an open palm: holding one out is how desktop mode is asked for.
+        #expect(feed(&controller, from: 0, seconds: 1.0) { reading(.pointIndex, at: $0) }.isEmpty)
         #expect(feed(&controller, from: 1.0, seconds: 4.5, present: false) { _ in nil }.isEmpty)
         #expect(feed(&controller, from: 5.5, seconds: 1.0, present: false) { _ in nil } == [.idle])
     }
@@ -144,5 +145,42 @@ struct ModeControllerTests {
         controller.set(.pointer)
         #expect(feed(&controller, from: 0, seconds: 5.0) { _ in nil }.isEmpty)
         #expect(controller.mode == .pointer)
+    }
+
+    @Test func aHeldPalmOpensDesktopModeAndAFistLeavesIt() {
+        var controller = ModeController()
+        // Shorter than the hold: showing a palm in passing is not asking for anything.
+        #expect(feed(&controller, from: 0, seconds: 0.4) { reading(.openPalm, at: $0) }.isEmpty)
+        #expect(feed(&controller, from: 0.5, seconds: 0.9) { reading(.openPalm, at: $0) } == [.desktop])
+        // Only the sweep is recognized there, and a held fist is still the way back to gesture mode.
+        #expect(feed(&controller, from: 1.5, seconds: 0.8) { reading(fist: true, at: $0) } == [.normal])
+    }
+
+    @Test func onlyGestureModeOffersDesktopMode() {
+        // From idle the palm means nothing: idle waits for a fist, or the cursor's two taps.
+        var idle = ModeController(mode: .idle)
+        #expect(feed(&idle, from: 0, seconds: 1.5) { reading(.openPalm, at: $0) }.isEmpty)
+        // Nor from the cursor, where an open hand happens between taps.
+        var pointer = ModeController(mode: .pointer)
+        #expect(feed(&pointer, from: 0, seconds: 1.5) { reading(.openPalm, at: $0) }.isEmpty)
+    }
+
+    @Test func desktopModeParksWhenNobodyIsThereButRidesOutALostHand() {
+        var controller = ModeController()
+        _ = feed(&controller, from: 0, seconds: 0.9) { reading(.openPalm, at: $0) }
+        #expect(controller.mode == .desktop)
+        // A hand that drops between two sweeps leaves the mode alone — there is no cursor to strand.
+        #expect(feed(&controller, from: 1.0, seconds: 4.0) { _ in nil }.isEmpty)
+        #expect(controller.mode == .desktop)
+        // Nobody in front of the camera parks it, the same as gesture mode: five seconds from the last one seen.
+        #expect(feed(&controller, from: 5.1, seconds: 5.5, present: false) { _ in nil } == [.idle])
+    }
+
+    @Test func theDoubleTapStillReachesTheCursorFromDesktopMode() {
+        var controller = ModeController()
+        _ = feed(&controller, from: 0, seconds: 0.9) { reading(.openPalm, at: $0) }
+        #expect(controller.mode == .desktop)
+        #expect(controller.update(reading(tap: .left, at: 1.0), personPresent: true, at: 1.0) == nil)
+        #expect(controller.update(reading(tap: .left, at: 1.2), personPresent: true, at: 1.2) == .pointer)
     }
 }

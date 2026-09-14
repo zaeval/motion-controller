@@ -22,6 +22,7 @@ extension InteractionMode {
         case .idle: "IDLE"
         case .normal: "제스처"
         case .pointer: "커서"
+        case .desktop: "데스크탑 전환"
         }
     }
 }
@@ -32,6 +33,7 @@ extension ModeChangeReason {
         switch self {
         case .doubleTap: "톡톡"
         case .fist: "주먹"
+        case .palmHold: "손바닥 유지"
         case .idleGesture: "주먹 뒤로"
         case .handLost: "손이 3초 안 보임"
         case .absence: "사람 없음"
