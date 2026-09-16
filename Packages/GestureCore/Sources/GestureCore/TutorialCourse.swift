@@ -17,6 +17,8 @@ public enum TutorialEvent: Equatable, Sendable {
     case faceEnrolled
     /// All four cursor corners were captured.
     case cursorCalibrated
+    /// The user left security mode on, or switched it off, in the tutorial.
+    case securityModeChosen
 }
 
 /// The tutorial's missions, in the order they're played: every gesture and mode, each cleared by actually doing it.
@@ -25,8 +27,9 @@ public enum TutorialStep: String, CaseIterable, Sendable {
     case enterDesktop, switchDesktop
     case enterCursor, moveCursor, click, rightClick, scroll, drag
     case backToGestures, park
-    /// The two things worth setting up once, offered at the end rather than taught: they open their own panels.
-    case enrollFace, calibrateCursor
+    /// The things worth settling once, offered at the end rather than taught: enrolling and calibrating open their
+    /// own panels, and security mode is a switch to understand and leave on or off.
+    case enrollFace, securityMode, calibrateCursor
 
     /// The mode the mission's gesture works in; nil when it's the one that changes the mode, or when it isn't a
     /// gesture at all.
@@ -35,7 +38,7 @@ public enum TutorialStep: String, CaseIterable, Sendable {
         case .playPause, .zoom, .volumeBrightness: .normal
         case .switchDesktop: .desktop
         case .moveCursor, .click, .rightClick, .scroll, .drag, .backToGestures: .pointer
-        case .enterGestures, .enterDesktop, .enterCursor, .park, .enrollFace, .calibrateCursor: nil
+        case .enterGestures, .enterDesktop, .enterCursor, .park, .enrollFace, .securityMode, .calibrateCursor: nil
         }
     }
 
@@ -44,11 +47,16 @@ public enum TutorialStep: String, CaseIterable, Sendable {
         self == .enrollFace || self == .calibrateCursor
     }
 
+    /// Missions that settle a setting instead of teaching a gesture.
+    public var isSetup: Bool {
+        opensPanel || self == .securityMode
+    }
+
     /// How many times the mission has to be done before it is cleared. Three, so a gesture is learnt rather than
-    /// stumbled into once (the user's call, 2026-09-14); the two setup missions are a button press, and pressing it
-    /// three times would be nonsense.
+    /// stumbled into once (the user's call, 2026-09-14); a setup mission is a button press, and pressing it three
+    /// times would be nonsense.
     public var repetitions: Int {
-        opensPanel ? 1 : 3
+        isSetup ? 1 : 3
     }
 }
 
@@ -91,7 +99,8 @@ public struct TutorialCourse: Equatable, Sendable {
             clears = true
         case (.enterDesktop, .mode(.desktop, because: .palmHold)):
             clears = true
-        case (.enrollFace, .faceEnrolled), (.calibrateCursor, .cursorCalibrated):
+        case (.enrollFace, .faceEnrolled), (.calibrateCursor, .cursorCalibrated),
+             (.securityMode, .securityModeChosen):
             clears = true
         case (.switchDesktop, .desktopSwitched), (.playPause, .playPaused), (.volumeBrightness, .volumeOrBrightness),
              (.click, .clicked), (.rightClick, .rightClicked), (.scroll, .scrolled), (.drag, .dragged):

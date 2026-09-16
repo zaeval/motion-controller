@@ -42,6 +42,11 @@ private struct MenuContent: View {
             get: { appState.pipeline.lockEnabled },
             set: { appState.pipeline.lockEnabled = $0 }
         ))
+        Toggle("보안 모드 (모르는 얼굴이면 바로 잠금)", isOn: Binding(
+            get: { appState.pipeline.securityMode },
+            set: { appState.pipeline.securityMode = $0 }
+        ))
+        .disabled(!appState.pipeline.lockEnabled || appState.pipeline.enrolledFaces.isEmpty)
         // Not disabled without the model any more: the panel offers to install it.
         Button(appState.pipeline.enrolledFaces.isEmpty ? "얼굴 등록…" : "얼굴 추가…") { appState.showEnrollment() }
             .disabled(!appState.isEnabled)

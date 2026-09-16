@@ -133,6 +133,7 @@ extension TutorialStep {
         case .enterDesktop: "🖐"
         case .switchDesktop: "🖐↔︎"
         case .playPause: "🖐⏯"
+        case .securityMode: "🛡"
         case .enrollFace: "🙂"
         case .calibrateCursor: "🎯"
         case .zoom: "🤟"
@@ -153,6 +154,7 @@ extension TutorialStep {
         case .enterDesktop: "데스크탑 전환 모드 들어가기"
         case .switchDesktop: "데스크톱 전환"
         case .playPause: "재생/정지"
+        case .securityMode: "보안 모드"
         case .enrollFace: "얼굴 등록 (화면 잠금)"
         case .calibrateCursor: "커서 영역 보정"
         case .zoom: "확대/축소"
@@ -174,6 +176,7 @@ extension TutorialStep {
         case .enterDesktop: "손바닥을 카메라에 보여 보세요. 바로 화면에 보라색 테두리가 생깁니다."
         case .switchDesktop: "그대로 손을 옆으로 크게 쓸어 보세요."
         case .playPause: "주먹으로 카메라를 두 번 노크하듯 톡톡 내밀어 보세요."
+        case .securityMode: "보안 모드를 켜 두면 등록되지 않은 얼굴이 카메라에 잡히는 순간 (다섯 번 연속, 약 2초) 화면이 바로 까매지고 잠깁니다. 사람이 없어지길 기다리지 않아요. 아래에서 켜고 끌 수 있고, 정한 뒤 확인을 누르면 다음으로 넘어갑니다."
         case .enrollFace: "얼굴을 등록하면 사람이 없을 때 화면이 까매지고 잠깁니다. 건너뛰어도 됩니다."
         case .calibrateCursor: "화면 네 모서리를 검지로 가리키면 커서가 손 위치에 정확히 붙습니다. 모서리마다 버튼을 눌러 넘어가고, 네 모서리를 두 번 돌아 평균을 씁니다."
         case .zoom: "세 손가락을 펴고 위로 올려 확대, 아래로 내려 축소해 보세요."
@@ -194,6 +197,7 @@ extension TutorialStep {
         case .enterDesktop: "이 모드에서는 좌우로 쓸기와 팡팡(재생/정지)만 인식해요. 나올 때는 주먹을 쥐거나 검지로 톡톡 하세요."
         case .switchDesktop: "오른쪽으로 쓸면 다음, 왼쪽으로 쓸면 이전 데스크톱이에요. 연속으로 할 때는 손을 멈췄다가(0.15초) 다시 쓸면 돼요."
         case .playPause: "손을 앞으로 쭉 내밀 필요는 없어요. 문을 두드리듯 가볍게 두 번이면 됩니다. 손을 펴면 취소되고, 주먹을 뒤로 뺀 채 가만히 있으면 IDLE이 돼요."
+        case .securityMode: "등록된 얼굴이 보이면 잠기지 않아요. 얼굴이 안 보이거나 너무 멀거나 방이 어두우면 그냥 둡니다. Touch ID·암호로 푼 뒤 2분간은 얼굴로 다시 잠그지 않아요. 메뉴바에서 언제든 켜고 끌 수 있어요."
         case .enrollFace: "여러 번 등록하면 인식이 좋아져요. 메뉴에서 언제든 다시 할 수 있어요."
         case .calibrateCursor: "커서가 손끝을 따라가요. 측정이 이상하면 '다시 측정'을 누르면 돼요. 메뉴의 '커서 영역 보정'으로 언제든 다시 할 수 있어요."
         case .zoom: "새끼손가락은 꼭 접어 주세요 — 네 손가락이 다 펴지면 손바닥으로 읽혀서 데스크탑 전환 모드로 갑니다. 확대가 남으면 ⌥⌘8로 끄세요."
@@ -300,6 +304,23 @@ struct TutorialView: View {
         } else if step == .calibrateCursor {
             Button("커서 영역 보정 시작") { onCalibrate() }
                 .controlSize(.large)
+        } else if step == .securityMode {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("보안 모드 켜기", isOn: Binding(
+                    get: { pipeline.securityMode },
+                    set: { pipeline.securityMode = $0 }
+                ))
+                .toggleStyle(.switch)
+                .disabled(!pipeline.lockEnabled || pipeline.enrolledFaces.isEmpty)
+                if !pipeline.lockEnabled || pipeline.enrolledFaces.isEmpty {
+                    Text("얼굴을 등록하고 '까만 화면 잠금'이 켜져 있어야 동작해요. 지금은 켜 둬도 잠기지 않아요.")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .wrapping()
+                }
+                Button("이대로 할게요") { pipeline.confirmSecurityChoice() }
+                    .controlSize(.large)
+            }
         }
     }
 

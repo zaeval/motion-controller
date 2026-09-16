@@ -53,6 +53,8 @@ final class Pipeline {
     private static let boxKey = "pointerBox2"
     /// Whether the dark screen locks, once a face is enrolled.
     private static let lockKey = "screenLock"
+    /// Whether a face matching nobody locks the screen on the spot.
+    private static let securityKey = "securityMode"
     /// Photos of whoever tried to use the Mac while it was locked.
     static let intruderPhotosDirectory = URL.applicationSupportDirectory
         .appending(path: "MotionController/Intruders", directoryHint: .isDirectory)
@@ -100,6 +102,9 @@ final class Pipeline {
     @ObservationIgnored private var faceVerification = FaceVerification()
     /// Checks the face of whoever turns up after an empty room.
     @ObservationIgnored private var strangerWatch = StrangerWatch()
+    /// `MC_STRANGER_TEST=1`: every face read as matching nobody, so the immediate lock can be tried without a second
+    /// person. The owner's own face locks the screen then; Touch ID is the way back in.
+    @ObservationIgnored private let strangerTestMode = ProcessInfo.processInfo.environment["MC_STRANGER_TEST"] != nil
     @ObservationIgnored private var enrollment: FaceEnrollment?
     /// The person being enrolled: a new id, or the id of the one being enrolled again.
     @ObservationIgnored private var enrollingID: UUID?
@@ -210,6 +215,17 @@ final class Pipeline {
     private(set) var faceModelInstall = FaceModelInstaller.Step.idle
 
     /// The menu's opt-in. Locking also needs an enrolled face, the Accessibility permission and a way to authenticate.
+    /// The menu's "보안 모드": a face belonging to nobody enrolled locks the screen at once, without waiting for the
+    /// room to empty (the user's call, 2026-09-16). On unless switched off; the lock and an enrolled face still gate it.
+    var securityMode = UserDefaults.standard.object(forKey: Pipeline.securityKey) as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(securityMode, forKey: Self.securityKey)
+            strangerWatch.reset()
+            updateFaceChecks()
+            logMotion(securityMode ? "🛡 보안 모드 켬" : "🛡 보안 모드 끔")
+        }
+    }
+
     var lockEnabled = UserDefaults.standard.bool(forKey: Pipeline.lockKey) {
         didSet {
             UserDefaults.standard.set(lockEnabled, forKey: Self.lockKey)
@@ -277,7 +293,11 @@ final class Pipeline {
         faceUnlockAvailable = faceSource.isAvailable
         loadFaces()
         screenLock.onAuthenticated = { [weak self] in
-            self?.endLock("🔓 Touch ID·암호로 잠금 해제", byOwner: true)
+            guard let self else { return }
+            self.endLock("🔓 Touch ID·암호로 잠금 해제", byOwner: true)
+            // They proved who they are; the camera evidently can't recognize them, so security mode leaves them be
+            // for a while instead of locking them straight back out.
+            self.strangerWatch.quiet(from: self.lastAnalyzedTime)
         }
         screenLock.onAskingChanged = { [weak self] asking in
             self?.screen.showUnlockDialog(asking)
@@ -525,6 +545,11 @@ final class Pipeline {
         }
     }
 
+    /// The tutorial's security-mode mission: the user has read what it does and left the switch where they want it.
+    func confirmSecurityChoice() {
+        onTutorialEvent?(.securityModeChosen)
+    }
+
     func revealIntruderPhotos() {
         try? FileManager.default.createDirectory(at: Self.intruderPhotosDirectory, withIntermediateDirectories: true)
         NSWorkspace.shared.open(Self.intruderPhotosDirectory)
@@ -625,8 +650,25 @@ final class Pipeline {
         lastFaceSimilarity = similarity
         lastFaceMatch = match?.face.name
         guard isLocked else {
-            // Nobody was there a moment ago: a face belonging to no one locks the screen before they can use it.
-            if strangerWatch.faceChecked(similarity: similarity, faceHeight: output.faceHeight, at: output.time) {
+            // Security mode: a face belonging to nobody locks the screen before they get to use it.
+            guard canLockOutStrangers else { return }
+            let vetted = similarity.map { strangerTestMode ? 0 : $0 }
+            let stranger = strangerWatch.faceChecked(
+                similarity: vetted, faceHeight: output.faceHeight, at: output.time
+            )
+            // Look often the moment a face stops matching, and ease off while somebody enrolled is in view.
+            let matching = (vetted ?? 1) >= FaceVerification.Settings().threshold
+            faceSource.interval = matching ? FaceSource.relaxedInterval : FaceSource.defaultInterval
+            Self.logger.notice(
+                """
+                Security check: similarity \(vetted ?? -1, format: .fixed(precision: 3)), \
+                height \(output.faceHeight, format: .fixed(precision: 3)), \
+                against \(self.strangerWatch.checksAgainst, privacy: .public), \
+                quiet \(self.strangerWatch.isQuiet(at: output.time), privacy: .public), \
+                stranger \(stranger, privacy: .public)
+                """
+            )
+            if stranger {
                 lockOutStranger()
             }
             return
@@ -733,14 +775,27 @@ final class Pipeline {
     /// locked screen then waits for Touch ID or the password instead (`ScreenLock`, which darkness never touches),
     /// and no embedding of a near-black frame gets to be compared with anyone's.
     private func updateFaceChecks() {
-        faceSource.wanted = isRunning && !sceneIsDark
-            && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty) || (strangerWatch.isVetting && canLockOutStrangers))
+        let wanted = isRunning && !sceneIsDark
+            && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty) || (personPresent && canLockOutStrangers))
+        if isLocked || enrollment != nil {
+            faceSource.interval = FaceSource.defaultInterval
+        }
+        if wanted != faceSource.wanted {
+            Self.logger.notice(
+                """
+                Face checks \(wanted ? "on" : "off", privacy: .public): locked \(self.isLocked, privacy: .public), \
+                person \(self.personPresent, privacy: .public), enrolling \(self.enrollment != nil, privacy: .public), \
+                dark \(self.sceneIsDark, privacy: .public), lock armed \(self.canLockOutStrangers, privacy: .public)
+                """
+            )
+        }
+        faceSource.wanted = wanted
     }
 
     /// Whether an unenrolled face could be locked out at all: the lock is on, somebody is enrolled to compare against
     /// and to get back in with, and the input tap and the dialog have what they need.
     private var canLockOutStrangers: Bool {
-        lockEnabled && !enrolledFaces.isEmpty && accessibilityTrusted && ScreenLock.canAuthenticate
+        securityMode && lockEnabled && !enrolledFaces.isEmpty && accessibilityTrusted && ScreenLock.canAuthenticate
     }
 
     /// A face matching nobody, right after an empty room: black the screen and lock it before they get to use it,
@@ -783,8 +838,6 @@ final class Pipeline {
         onLockCover?(false)
         screenLock.unlock()
         _ = screenPresence.unlock(at: lastAnalyzedTime)
-        // Whoever just got in has been placed; vetting starts over only after the room empties again.
-        strangerWatch.reset()
         screen.wake()
         updateFaceChecks()
         if let text {
@@ -910,6 +963,8 @@ final class Pipeline {
         if present != personPresent {
             personPresent = present
             Self.logger.notice("Person \(present ? "present" : "absent", privacy: .public)")
+            // Security mode watches every face while anyone is there, and nothing at all while nobody is.
+            updateFaceChecks()
         }
 
         lastAnalyzedTime = time
@@ -930,13 +985,6 @@ final class Pipeline {
         // the one way back in when the camera can't see a face (user's call, 2026-09-14).
         if sceneIsDark {
             return
-        }
-
-        // Somebody turning up after an empty room gets their face checked, and one matching nobody locks at once.
-        let wasVetting = strangerWatch.isVetting
-        strangerWatch.update(personPresent: present, at: time)
-        if strangerWatch.isVetting != wasVetting {
-            updateFaceChecks()
         }
 
         // Whatever the mode, calibration included: dark once nobody has been there a while. Typing or using the mouse
@@ -1324,7 +1372,7 @@ final class Pipeline {
         // log after the fact. The debug preview shows the same numbers live.
         if output.frame.timestamp - lastStatsLog >= 5 {
             lastStatsLog = output.frame.timestamp
-            Self.logger.notice("Vision \(self.handSourceMode.rawValue, privacy: .public) \(self.stats.fps, format: .fixed(precision: 1), privacy: .public) fps \(output.processingMilliseconds, format: .fixed(precision: 1), privacy: .public) ms · bodies \(output.frame.bodies.count, privacy: .public) hands \(output.frame.allHands.count, privacy: .public) (loose \(output.frame.looseHands.count, privacy: .public))")
+            Self.logger.notice("Vision \(self.handSourceMode.rawValue, privacy: .public) \(self.stats.fps, format: .fixed(precision: 1), privacy: .public) fps \(output.processingMilliseconds, format: .fixed(precision: 1), privacy: .public) ms · bodies \(output.frame.bodies.count, privacy: .public) hands \(output.frame.allHands.count, privacy: .public) (loose \(output.frame.looseHands.count, privacy: .public)) · person \(self.personPresent, privacy: .public) dark \(self.sceneIsDark, privacy: .public) luma \(self.sceneLuma ?? -1, format: .fixed(precision: 2), privacy: .public) security \(self.securityMode, privacy: .public) locked \(self.isLocked, privacy: .public) armed \(self.canLockOutStrangers, privacy: .public)")
         }
         recentOutputs.append((output.frame.timestamp, output.processingMilliseconds))
         if recentOutputs.count > 60 {
