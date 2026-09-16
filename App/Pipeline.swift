@@ -98,6 +98,8 @@ final class Pipeline {
     @ObservationIgnored private let screenLock = ScreenLock()
     @ObservationIgnored private let faceSource = FaceSource()
     @ObservationIgnored private var faceVerification = FaceVerification()
+    /// Checks the face of whoever turns up after an empty room.
+    @ObservationIgnored private var strangerWatch = StrangerWatch()
     @ObservationIgnored private var enrollment: FaceEnrollment?
     /// The person being enrolled: a new id, or the id of the one being enrolled again.
     @ObservationIgnored private var enrollingID: UUID?
@@ -372,6 +374,7 @@ final class Pipeline {
         lastPersonTime = -.infinity
         screen.release()
         screenPresence = ScreenPresence()
+        strangerWatch.reset()
         sceneLight = SceneLight()
         sceneIsDark = forcedDark
         sceneLuma = nil
@@ -615,12 +618,20 @@ final class Pipeline {
             }
             return
         }
-        guard isLocked, !enrolledFaces.isEmpty else { return }
-        // Any enrolled person unlocks, and none of them is photographed: compare with whoever is closest.
+        guard !enrolledFaces.isEmpty else { return }
+        // Whoever is closest to somebody enrolled: the one who can unlock, or nobody at all.
         let match = output.embedding.flatMap { enrolledFaces.bestMatch(for: $0) }
         let similarity = match?.similarity
         lastFaceSimilarity = similarity
         lastFaceMatch = match?.face.name
+        guard isLocked else {
+            // Nobody was there a moment ago: a face belonging to no one locks the screen before they can use it.
+            if strangerWatch.faceChecked(similarity: similarity, faceHeight: output.faceHeight, at: output.time) {
+                lockOutStranger()
+            }
+            return
+        }
+        // Any enrolled person unlocks, and none of them is photographed.
         watchIntruders(.faceChecked(similarity: similarity))
         if let match {
             Self.logger.notice(
@@ -722,7 +733,23 @@ final class Pipeline {
     /// locked screen then waits for Touch ID or the password instead (`ScreenLock`, which darkness never touches),
     /// and no embedding of a near-black frame gets to be compared with anyone's.
     private func updateFaceChecks() {
-        faceSource.wanted = isRunning && !sceneIsDark && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty))
+        faceSource.wanted = isRunning && !sceneIsDark
+            && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty) || (strangerWatch.isVetting && canLockOutStrangers))
+    }
+
+    /// Whether an unenrolled face could be locked out at all: the lock is on, somebody is enrolled to compare against
+    /// and to get back in with, and the input tap and the dialog have what they need.
+    private var canLockOutStrangers: Bool {
+        lockEnabled && !enrolledFaces.isEmpty && accessibilityTrusted && ScreenLock.canAuthenticate
+    }
+
+    /// A face matching nobody, right after an empty room: black the screen and lock it before they get to use it,
+    /// instead of waiting out the ten seconds an empty room would take (the user's call, 2026-09-16).
+    private func lockOutStranger() {
+        guard canLockOutStrangers, engageLock() else { return }
+        screen.dim(wakesOnInput: false)
+        Self.logger.notice("A face matching nobody turned up after an empty room: locking")
+        logMotion("🔒 모르는 얼굴 · 바로 잠금")
     }
 
     /// Locks input and parks recognition. False, with nothing locked, when locking can't work right now.
@@ -733,6 +760,7 @@ final class Pipeline {
         UserDefaults.standard.set(true, forKey: Self.wasLockedKey)
         onLockCover?(true)
         faceVerification.reset()
+        strangerWatch.reset()
         lastFaceSimilarity = nil
         cancelCalibration()
         cancelEnrollment()
@@ -755,6 +783,8 @@ final class Pipeline {
         onLockCover?(false)
         screenLock.unlock()
         _ = screenPresence.unlock(at: lastAnalyzedTime)
+        // Whoever just got in has been placed; vetting starts over only after the room empties again.
+        strangerWatch.reset()
         screen.wake()
         updateFaceChecks()
         if let text {
@@ -900,6 +930,13 @@ final class Pipeline {
         // the one way back in when the camera can't see a face (user's call, 2026-09-14).
         if sceneIsDark {
             return
+        }
+
+        // Somebody turning up after an empty room gets their face checked, and one matching nobody locks at once.
+        let wasVetting = strangerWatch.isVetting
+        strangerWatch.update(personPresent: present, at: time)
+        if strangerWatch.isVetting != wasVetting {
+            updateFaceChecks()
         }
 
         // Whatever the mode, calibration included: dark once nobody has been there a while. Typing or using the mouse
