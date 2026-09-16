@@ -3,9 +3,26 @@ import Testing
 @testable import GestureCore
 
 struct StrangerWatchTests {
-    /// Checks a face of `similarity` `count` times, a quarter second apart from `start`.
+    private static let frame = 1.0 / 30
+
+    /// Feeds `seconds` of presence frames from `start`.
+    private func feed(_ watch: inout StrangerWatch, present: Bool, seconds: TimeInterval, from start: TimeInterval) {
+        for index in 0...Int((seconds / Self.frame).rounded()) {
+            watch.update(personPresent: present, at: start + Double(index) * Self.frame)
+        }
+    }
+
+    /// An empty seat, then somebody in it: where every test starts. Returns when they turned up.
+    private func somebodyArrives(_ watch: inout StrangerWatch) -> TimeInterval {
+        feed(&watch, present: true, seconds: 1, from: 0)
+        feed(&watch, present: false, seconds: 4, from: 1)
+        feed(&watch, present: true, seconds: 0.2, from: 5)
+        return 5
+    }
+
+    /// Checks a face of `similarity` `count` times, a quarter second apart.
     private func check(
-        _ watch: inout StrangerWatch, similarity: Double?, count: Int, from start: TimeInterval = 0,
+        _ watch: inout StrangerWatch, similarity: Double?, count: Int, from start: TimeInterval,
         faceHeight: Double = 0.2
     ) -> [Bool] {
         var verdicts: [Bool] = []
@@ -17,51 +34,86 @@ struct StrangerWatchTests {
         return verdicts
     }
 
-    @Test func aFaceMatchingNobodyLocksAfterAFewChecksInARow() {
+    @Test func aFaceMatchingNobodyInAnEmptiedSeatLocks() {
         var watch = StrangerWatch()
-        let verdicts = check(&watch, similarity: 0.1, count: 5)
-        #expect(verdicts == [false, false, false, false, true])
+        let arrived = somebodyArrives(&watch)
+        #expect(watch.isChecking)
+        #expect(check(&watch, similarity: 0.1, count: 5, from: arrived) == [false, false, false, false, true])
         // It fires once; the lock takes over from there.
-        #expect(check(&watch, similarity: 0.1, count: 4, from: 2) == [false, false, false, false])
+        #expect(!watch.isChecking)
+        #expect(check(&watch, similarity: 0.1, count: 5, from: arrived + 2).allSatisfy { !$0 })
     }
 
-    @Test func anEnrolledFaceStartsTheCountOver() {
+    @Test func whoeverWasAlreadySittingThereIsNeverChecked() {
         var watch = StrangerWatch()
-        #expect(check(&watch, similarity: 0.1, count: 4).allSatisfy { !$0 })
-        #expect(check(&watch, similarity: 0.8, count: 1, from: 1) == [false])
-        #expect(watch.checksAgainst == 0)
-        #expect(check(&watch, similarity: 0.1, count: 4, from: 2).allSatisfy { !$0 })
-        #expect(check(&watch, similarity: 0.1, count: 1, from: 3) == [true])
+        feed(&watch, present: true, seconds: 30, from: 0)
+        #expect(!watch.isChecking)
+        #expect(check(&watch, similarity: 0.1, count: 8, from: 30).allSatisfy { !$0 })
+        // A blink of absence is not an empty seat either: under two seconds and back.
+        feed(&watch, present: true, seconds: 2, from: 32)
+        feed(&watch, present: false, seconds: 1.5, from: 34)
+        feed(&watch, present: true, seconds: 1, from: 35.5)
+        #expect(!watch.isChecking)
     }
 
-    @Test func aFaceTheCameraCantMakeOutIsNoEvidence() {
+    @Test func trackingThatBlinksOutForAMomentDoesNotEndTheChecking() {
         var watch = StrangerWatch()
-        #expect(check(&watch, similarity: nil, count: 20).allSatisfy { !$0 })
-        #expect(check(&watch, similarity: 0.1, count: 20, from: 6, faceHeight: 0.05).allSatisfy { !$0 })
-        #expect(watch.checksAgainst == 0)
+        let arrived = somebodyArrives(&watch)
+        #expect(check(&watch, similarity: 0.1, count: 2, from: arrived) == [false, false])
+        feed(&watch, present: false, seconds: 1, from: arrived + 0.5)
+        feed(&watch, present: true, seconds: 0.2, from: arrived + 1.5)
+        #expect(watch.isChecking)
+        #expect(check(&watch, similarity: 0.1, count: 3, from: arrived + 1.7) == [false, false, true])
+    }
+
+    @Test func anEnrolledFaceEndsTheCheckingAndAStrangerAfterThemDoesNothing() {
+        var watch = StrangerWatch()
+        let arrived = somebodyArrives(&watch)
+        #expect(check(&watch, similarity: 0.8, count: 1, from: arrived) == [false])
+        #expect(!watch.isChecking)
+        #expect(check(&watch, similarity: 0.1, count: 8, from: arrived + 0.5).allSatisfy { !$0 })
+    }
+
+    @Test func noFaceOrOneTooFarAwayNeverLocks() {
+        var watch = StrangerWatch()
+        let arrived = somebodyArrives(&watch)
+        #expect(check(&watch, similarity: nil, count: 8, from: arrived).allSatisfy { !$0 })
+        #expect(check(&watch, similarity: 0.1, count: 8, from: arrived + 2, faceHeight: 0.04).allSatisfy { !$0 })
+        #expect(watch.isChecking)
+    }
+
+    @Test func checkingGivesUpAfterItsWindowAndLeavingAgainStartsItOver() {
+        var watch = StrangerWatch()
+        let arrived = somebodyArrives(&watch)
+        feed(&watch, present: true, seconds: 11, from: arrived)
+        #expect(!watch.isChecking)
+        #expect(check(&watch, similarity: 0.1, count: 5, from: arrived + 11).allSatisfy { !$0 })
+
+        feed(&watch, present: false, seconds: 4, from: arrived + 12)
+        feed(&watch, present: true, seconds: 0.2, from: arrived + 16)
+        #expect(watch.isChecking)
+        #expect(check(&watch, similarity: 0.1, count: 5, from: arrived + 16).last == true)
     }
 
     @Test func touchIDBuysPeaceAndAnEnrolledFaceEndsItEarly() {
         var watch = StrangerWatch()
-        watch.quiet(from: 0)
-        #expect(watch.isQuiet(at: 100))
-        #expect(check(&watch, similarity: 0.1, count: 12, from: 1).allSatisfy { !$0 })
-        // Past the quiet time it locks again.
-        #expect(check(&watch, similarity: 0.1, count: 5, from: 121).last == true)
+        let arrived = somebodyArrives(&watch)
+        watch.quiet(from: arrived)
+        #expect(watch.isQuiet(at: arrived + 100))
+        #expect(check(&watch, similarity: 0.1, count: 10, from: arrived).allSatisfy { !$0 })
 
         var recognized = StrangerWatch()
-        recognized.quiet(from: 0)
-        _ = recognized.faceChecked(similarity: 0.8, faceHeight: 0.2, at: 1)
-        #expect(!recognized.isQuiet(at: 2))
+        let back = somebodyArrives(&recognized)
+        recognized.quiet(from: back)
+        #expect(check(&recognized, similarity: 0.8, count: 1, from: back) == [false])
+        #expect(!recognized.isQuiet(at: back + 1))
     }
 
     @Test func resettingForgetsEverything() {
         var watch = StrangerWatch()
-        _ = check(&watch, similarity: 0.1, count: 4)
-        watch.quiet(from: 0)
+        let arrived = somebodyArrives(&watch)
         watch.reset()
-        #expect(watch.checksAgainst == 0)
-        #expect(!watch.isQuiet(at: 1))
-        #expect(check(&watch, similarity: 0.1, count: 5, from: 1).last == true)
+        #expect(!watch.isChecking)
+        #expect(check(&watch, similarity: 0.1, count: 5, from: arrived).allSatisfy { !$0 })
     }
 }

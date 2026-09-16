@@ -20,17 +20,15 @@ final class FaceSource: Sendable {
 
     private struct State: Sendable {
         var wanted = false
-        var interval = FaceSource.defaultInterval
         var busy = false
         var lastStart: TimeInterval = -.infinity
         var handler: (@Sendable (Output) -> Void)?
     }
 
     /// About four checks a second: unlocks within a second, and catches a face that matches nobody in about one.
-    static let defaultInterval: TimeInterval = 0.25
-    /// While somebody enrolled is in view there is nothing to catch, and every check costs about a quarter of the
-    /// frame rate hand tracking runs at, so it eases off to once a second until a face stops matching.
-    static let relaxedInterval: TimeInterval = 1
+    /// Checks are only asked for in bursts — while locked, while enrolling, and while somebody who just turned up is
+    /// being checked — because each one costs about a quarter of the frame rate hand tracking runs at.
+    private static let interval: TimeInterval = 0.25
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "Face")
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let embedder = OSAllocatedUnfairLock<FaceEmbedder?>(initialState: FaceEmbedder.load())
@@ -50,12 +48,6 @@ final class FaceSource: Sendable {
         set { state.withLock { $0.wanted = newValue } }
     }
 
-    /// How long between checks.
-    var interval: TimeInterval {
-        get { state.withLock { $0.interval } }
-        set { state.withLock { $0.interval = newValue } }
-    }
-
     func setHandler(_ handler: @escaping @Sendable (Output) -> Void) {
         state.withLock { $0.handler = handler }
     }
@@ -64,7 +56,7 @@ final class FaceSource: Sendable {
     func process(_ pixelBuffer: CVPixelBuffer, at time: TimeInterval) {
         guard let embedder = embedder.withLock({ $0 }) else { return }
         let starts = state.withLock {
-            guard $0.wanted, !$0.busy, time - $0.lastStart >= $0.interval else { return false }
+            guard $0.wanted, !$0.busy, time - $0.lastStart >= Self.interval else { return false }
             $0.busy = true
             $0.lastStart = time
             return true

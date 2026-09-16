@@ -656,9 +656,6 @@ final class Pipeline {
             let stranger = strangerWatch.faceChecked(
                 similarity: vetted, faceHeight: output.faceHeight, at: output.time
             )
-            // Look often the moment a face stops matching, and ease off while somebody enrolled is in view.
-            let matching = (vetted ?? 1) >= FaceVerification.Settings().threshold
-            faceSource.interval = matching ? FaceSource.relaxedInterval : FaceSource.defaultInterval
             Self.logger.notice(
                 """
                 Security check: similarity \(vetted ?? -1, format: .fixed(precision: 3)), \
@@ -776,15 +773,12 @@ final class Pipeline {
     /// and no embedding of a near-black frame gets to be compared with anyone's.
     private func updateFaceChecks() {
         let wanted = isRunning && !sceneIsDark
-            && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty) || (personPresent && canLockOutStrangers))
-        if isLocked || enrollment != nil {
-            faceSource.interval = FaceSource.defaultInterval
-        }
+            && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty) || (strangerWatch.isChecking && canLockOutStrangers))
         if wanted != faceSource.wanted {
             Self.logger.notice(
                 """
                 Face checks \(wanted ? "on" : "off", privacy: .public): locked \(self.isLocked, privacy: .public), \
-                person \(self.personPresent, privacy: .public), enrolling \(self.enrollment != nil, privacy: .public), \
+                checking \(self.strangerWatch.isChecking, privacy: .public), enrolling \(self.enrollment != nil, privacy: .public), \
                 dark \(self.sceneIsDark, privacy: .public), lock armed \(self.canLockOutStrangers, privacy: .public)
                 """
             )
@@ -803,8 +797,25 @@ final class Pipeline {
     private func lockOutStranger() {
         guard canLockOutStrangers, engageLock() else { return }
         screen.dim(wakesOnInput: false)
-        Self.logger.notice("A face matching nobody turned up after an empty room: locking")
+        // The face is right there in view: photograph it now rather than waiting for them to touch something (the
+        // user's call, 2026-09-16). Two shots a moment apart, because the first can catch a blink or a turn.
+        photographStranger()
+        Self.logger.notice("A face matching nobody turned up after an empty seat: locking")
         logMotion("🔒 모르는 얼굴 · 바로 잠금")
+    }
+
+    /// Keeps a couple of photos of whoever is in front of the camera right now, under their own attempt so they are
+    /// saved however the lock ends.
+    private func photographStranger() {
+        attempt += 1
+        attemptPhotos = []
+        keptAttempts.insert(attempt)
+        let attempt = attempt
+        snapshots.request(tag: attempt)
+        Task { [weak self] in
+            try? await Task.sleep(for: .milliseconds(700))
+            self?.snapshots.request(tag: attempt)
+        }
     }
 
     /// Locks input and parks recognition. False, with nothing locked, when locking can't work right now.
@@ -963,8 +974,6 @@ final class Pipeline {
         if present != personPresent {
             personPresent = present
             Self.logger.notice("Person \(present ? "present" : "absent", privacy: .public)")
-            // Security mode watches every face while anyone is there, and nothing at all while nobody is.
-            updateFaceChecks()
         }
 
         lastAnalyzedTime = time
@@ -985,6 +994,15 @@ final class Pipeline {
         // the one way back in when the camera can't see a face (user's call, 2026-09-14).
         if sceneIsDark {
             return
+        }
+
+        // Security mode: somebody who turns up after the seat emptied — which is exactly what the ten-second
+        // countdown to a dark screen leaves room for — gets their face checked, and one matching nobody locks at once.
+        let wasChecking = strangerWatch.isChecking
+        strangerWatch.update(personPresent: present, at: time)
+        if strangerWatch.isChecking != wasChecking {
+            Self.logger.notice("Security checks \(self.strangerWatch.isChecking ? "started" : "ended", privacy: .public)")
+            updateFaceChecks()
         }
 
         // Whatever the mode, calibration included: dark once nobody has been there a while. Typing or using the mouse
