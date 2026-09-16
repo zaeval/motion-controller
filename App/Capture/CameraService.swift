@@ -17,6 +17,8 @@ final class CameraService: NSObject, @unchecked Sendable {
     let session = AVCaptureSession()
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "Camera")
     private static let frameRate: Double = 30
+    /// `MC_CAMERA_MAX_WIDTH`: the widest format to pick, for measuring what resolution costs Vision. 1280 by default.
+    private static let maxWidth = ProcessInfo.processInfo.environment["MC_CAMERA_MAX_WIDTH"].flatMap { Int32($0) } ?? 1280
     private let output = AVCaptureVideoDataOutput()
     private let queue = DispatchQueue(label: "MotionController.camera", qos: .userInteractive)
     private var input: AVCaptureDeviceInput?
@@ -120,7 +122,7 @@ final class CameraService: NSObject, @unchecked Sendable {
         let frameRate = Self.frameRate
         let candidates = device.formats.filter { format in
             let size = CMVideoFormatDescriptionGetDimensions(format.formatDescription)
-            return size.width > size.height && size.width >= 640 && size.width <= 1280
+            return size.width > size.height && size.width >= 320 && size.width <= Self.maxWidth
                 && format.videoSupportedFrameRateRanges.contains { $0.minFrameRate <= frameRate && frameRate <= $0.maxFrameRate }
         }
         func rank(_ format: AVCaptureDevice.Format) -> (Int, Int32) {

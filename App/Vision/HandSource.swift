@@ -42,6 +42,10 @@ final class HandSource: Sendable {
     struct Output: Sendable {
         let frame: PoseFrame
         let processingMilliseconds: Double
+        /// What each Vision request cost on this frame, to see where the frame rate goes; the body one is 0 on the
+        /// frames it doesn't run.
+        let handMilliseconds: Double
+        let bodyMilliseconds: Double
         /// Set when Vision threw on this frame (the frame is then empty), so "no hands" and "failing" differ.
         let error: String?
     }
@@ -55,6 +59,11 @@ final class HandSource: Sendable {
     }
 
     private static let bodyRefreshInterval: TimeInterval = 0.1
+    /// While a hand is in view the body pose is worth far less — the hand itself proves somebody is there, and the
+    /// cursor follows the hand, not the body — and it is the expensive request: 47.7 ms against the hand's 23.8, on
+    /// 48% of frames, which is where the frame rate was going (measured 2026-09-16). So it runs a quarter as often
+    /// while a hand is tracked, and at full rate again the moment the hand is gone.
+    private static let bodyRefreshWithHand: TimeInterval = 0.4
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "HandSource")
     private let state = OSAllocatedUnfairLock(initialState: State())
 
@@ -87,9 +96,14 @@ final class HandSource: Sendable {
             let clock = ContinuousClock()
             let start = clock.now
             let frame: PoseFrame
+            var handMilliseconds = 0.0
+            var bodyMilliseconds = 0.0
             var failure: String?
             do {
-                frame = try await self.detect(mode: mode, in: buffer, aspect: aspect, at: time)
+                let detected = try await self.detect(mode: mode, in: buffer, aspect: aspect, at: time)
+                frame = detected.frame
+                handMilliseconds = detected.hand
+                bodyMilliseconds = detected.body
             } catch {
                 Self.logger.error("Vision \(mode.rawValue, privacy: .public) failed: \(String(describing: error), privacy: .public)")
                 failure = "\(mode.rawValue): \(error.localizedDescription)"
@@ -100,34 +114,49 @@ final class HandSource: Sendable {
                 $0.busy = false
                 return $0.handler
             }
-            handler?(Output(frame: frame, processingMilliseconds: elapsed.milliseconds, error: failure))
+            handler?(Output(
+                frame: frame, processingMilliseconds: elapsed.milliseconds,
+                handMilliseconds: handMilliseconds, bodyMilliseconds: bodyMilliseconds, error: failure
+            ))
         }
     }
 
-    private func detect(mode: HandSourceMode, in buffer: CVPixelBuffer, aspect: Double, at time: TimeInterval) async throws -> PoseFrame {
+    private func detect(
+        mode: HandSourceMode, in buffer: CVPixelBuffer, aspect: Double, at time: TimeInterval
+    ) async throws -> (frame: PoseFrame, hand: Double, body: Double) {
         switch mode {
         case .bodyWithHands:
             var request = DetectHumanBodyPoseRequest()
             request.detectsHands = true
+            let clock = ContinuousClock()
+            let started = clock.now
             let bodies = try await request.perform(on: buffer).map {
                 VisionMapping.body(from: $0, aspect: aspect, at: time, includeHands: true)
             }
-            return PoseFrame(bodies: bodies, looseHands: [], timestamp: time, imageAspect: aspect)
+            let frame = PoseFrame(bodies: bodies, looseHands: [], timestamp: time, imageAspect: aspect)
+            return (frame, 0, started.duration(to: clock.now).milliseconds)
 
         case .handsPlusBody:
             var handRequest = DetectHumanHandPoseRequest()
             // Two: one operator, two hands. Four cost frame rate for people this app doesn't act on anyway — the
             // operator lock that would need them is v2.
             handRequest.maximumHandCount = 2
+            let clock = ContinuousClock()
+            let handStarted = clock.now
             let hands = try await handRequest.perform(on: buffer).map {
                 VisionMapping.hand(from: $0, side: nil, aspect: aspect, at: time)
             }
-            let needsBodies = state.withLock { time - $0.cachedBodiesTime >= Self.bodyRefreshInterval }
+            let handMilliseconds = handStarted.duration(to: clock.now).milliseconds
+            let refresh = hands.isEmpty ? Self.bodyRefreshInterval : Self.bodyRefreshWithHand
+            let needsBodies = state.withLock { time - $0.cachedBodiesTime >= refresh }
             let bodies: [Body]
+            var bodyMilliseconds = 0.0
             if needsBodies {
+                let bodyStarted = clock.now
                 bodies = try await DetectHumanBodyPoseRequest().perform(on: buffer).map {
                     VisionMapping.body(from: $0, aspect: aspect, at: time, includeHands: false)
                 }
+                bodyMilliseconds = bodyStarted.duration(to: clock.now).milliseconds
                 state.withLock {
                     $0.cachedBodies = bodies
                     $0.cachedBodiesTime = time
@@ -136,7 +165,8 @@ final class HandSource: Sendable {
                 bodies = state.withLock { $0.cachedBodies }
             }
             let attached = HandAssociation.attach(hands, to: bodies)
-            return PoseFrame(bodies: attached.bodies, looseHands: attached.looseHands, timestamp: time, imageAspect: aspect)
+            let frame = PoseFrame(bodies: attached.bodies, looseHands: attached.looseHands, timestamp: time, imageAspect: aspect)
+            return (frame, handMilliseconds, bodyMilliseconds)
         }
     }
 }
