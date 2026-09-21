@@ -52,40 +52,42 @@ struct ModeControllerTests {
         #expect(pointer.update(reading(.pointIndex, tap: .left, at: 0.3), personPresent: true, at: 0.3) == nil)
     }
 
-    @Test func aHeldFistReturnsToGestureModeButATapLengthOneDoesNot() {
-        for start in [InteractionMode.pointer, .idle] {
+    /// The user's call (2026-09-21): one gesture both ways, where a held fist used to open gesture mode.
+    @Test func aFistPulledBackTogglesBetweenGestureModeAndIdle() {
+        var controller = ModeController(mode: .idle)
+        #expect(controller.update(reading(fist: true, idleGesture: true, at: 0), personPresent: true, at: 0) == .normal)
+        #expect(controller.lastChangeReason == .fist)
+        // The same fist, still closed and read as pulled back again as the hand comes down: no toggling straight back.
+        #expect(controller.update(reading(fist: true, idleGesture: true, at: 0.1), personPresent: true, at: 0.1) == nil)
+        // Opened, then closed and pulled back on purpose: parked.
+        _ = feed(&controller, from: 0.2, seconds: 0.2) { reading(at: $0) }
+        #expect(controller.update(reading(fist: true, idleGesture: true, at: 0.5), personPresent: true, at: 0.5) == .idle)
+        #expect(controller.lastChangeReason == .idleGesture)
+    }
+
+    @Test func fromTheCursorTheSamePullComesBackToGestureModeAndFromDesktopModeItParks() {
+        var cursor = ModeController(mode: .pointer)
+        #expect(cursor.update(reading(fist: true, idleGesture: true, at: 0), personPresent: true, at: 0) == .normal)
+        // Desktop mode is a palm away from gesture mode, and a park reaches for the fist through that palm.
+        var desktop = ModeController(mode: .desktop)
+        #expect(desktop.update(reading(fist: true, idleGesture: true, at: 0), personPresent: true, at: 0) == .idle)
+    }
+
+    @Test func holdingAFistStillNoLongerChangesAnything() {
+        for start in [InteractionMode.pointer, .idle, .desktop] {
             var controller = ModeController(mode: start)
-            #expect(feed(&controller, from: 0, seconds: 0.1) { reading(fist: true, at: $0) }.isEmpty)
-            #expect(feed(&controller, from: 0.1, seconds: 0.3) { reading(.pointIndex, at: $0) }.isEmpty)
-            #expect(feed(&controller, from: 0.4, seconds: 0.8) { reading(fist: true, at: $0) } == [.normal])
+            #expect(feed(&controller, from: 0, seconds: 1.5) { reading(fist: true, at: $0) }.isEmpty)
+            #expect(controller.mode == start)
         }
     }
 
     @Test func aFistNeverLeavesPointerModeWhileAPinchHoldsTheButton() {
         var controller = ModeController(mode: .pointer)
-        #expect(feed(&controller, from: 0, seconds: 1.5, holdingButton: true) { reading(fist: true, at: $0) }.isEmpty)
+        let pulled = controller.update(
+            reading(fist: true, idleGesture: true, at: 0), personPresent: true, holdingButton: true, at: 0
+        )
+        #expect(pulled == nil)
         #expect(controller.mode == .pointer)
-    }
-
-    @Test func aFistPulledBackParksAndThatFistMustOpenBeforeResuming() {
-        var fromGestures = ModeController()
-        #expect(fromGestures.update(reading(fist: true, idleGesture: true, at: 0), personPresent: true, at: 0) == .idle)
-
-        var controller = ModeController(mode: .pointer)
-        #expect(controller.update(reading(fist: true, idleGesture: true, at: 0), personPresent: true, at: 0) == .idle)
-        #expect(feed(&controller, from: Self.frame, seconds: 1.0) { reading(fist: true, at: $0) }.isEmpty)
-        #expect(feed(&controller, from: 1.1, seconds: 0.2) { reading(.openPalm, at: $0) }.isEmpty)
-        #expect(feed(&controller, from: 1.3, seconds: 0.8) { reading(fist: true, at: $0) } == [.normal])
-    }
-
-    @Test func theFistThatResumesFromIdleMustOpenBeforeItCanParkAgain() {
-        var controller = ModeController(mode: .idle)
-        #expect(feed(&controller, from: 0, seconds: 0.8) { reading(fist: true, at: $0) } == [.normal])
-        // Still that fist, looking pulled back as the hand comes down: not a park.
-        #expect(controller.update(reading(fist: true, idleGesture: true, at: 0.8), personPresent: true, at: 0.8) == nil)
-        // Opened, then closed and pulled back on purpose: a park.
-        _ = feed(&controller, from: 0.83, seconds: 0.2) { reading(.openPalm, at: $0) }
-        #expect(controller.update(reading(fist: true, idleGesture: true, at: 1.1), personPresent: true, at: 1.1) == .idle)
     }
 
     @Test func nobodyInFrontParksRecognition() {
@@ -117,7 +119,7 @@ struct ModeControllerTests {
         _ = controller.update(reading(.pointIndex, tap: .left, at: 0), personPresent: true, at: 0)
         #expect(controller.update(reading(.pointIndex, tap: .left, at: 0.3), personPresent: true, at: 0.3) == .pointer)
         #expect(controller.lastChangeReason == .doubleTap)
-        #expect(feed(&controller, from: 0.4, seconds: 0.8) { reading(fist: true, at: $0) } == [.normal])
+        #expect(controller.update(reading(fist: true, idleGesture: true, at: 0.4), personPresent: true, at: 0.4) == .normal)
         #expect(controller.lastChangeReason == .fist)
 
         controller.set(.pointer)
@@ -153,8 +155,9 @@ struct ModeControllerTests {
         // A frame or two of palm is enough — no hold, at the user's request (2026-09-14) — but not a single frame.
         #expect(feed(&controller, from: 0, seconds: 0.06) { reading(.openPalm, at: $0) }.isEmpty)
         #expect(feed(&controller, from: 0.07, seconds: 0.3) { reading(.openPalm, at: $0) } == [.desktop])
-        // Only the sweep is recognized there, and a held fist is still the way back to gesture mode.
-        #expect(feed(&controller, from: 1.5, seconds: 0.8) { reading(fist: true, at: $0) } == [.normal])
+        // Only the sweep is recognized there; another gesture's shape hands back to gesture mode, and a fist pulled
+        // back parks the way it does from gesture mode.
+        #expect(controller.update(reading(fist: true, idleGesture: true, at: 1.5), personPresent: true, at: 1.5) == .idle)
     }
 
     @Test func onlyGestureModeOffersDesktopMode() {

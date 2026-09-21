@@ -205,6 +205,8 @@ final class Pipeline {
     private(set) var intruderPhotoCount = 0
     /// Owner mode has the owner in view and is following them.
     private(set) var ownerInView = false
+    /// Who owner mode recognized, for the overlay.
+    private(set) var ownerName: String?
     /// Owner mode is holding everything back: more than one person in view and none of them known to be the owner.
     private(set) var ownerBlocked = false
 
@@ -245,6 +247,7 @@ final class Pipeline {
             ownerTracker.reset()
             ownerInView = false
             ownerBlocked = false
+            ownerName = nil
             updateFaceChecks()
             logMotion(ownerMode ? "🙋 주인만 인식 켬" : "🙋 주인만 인식 끔")
         }
@@ -422,6 +425,7 @@ final class Pipeline {
         ownerTracker.reset()
         ownerInView = false
         ownerBlocked = false
+        ownerName = nil
         sceneLight = SceneLight()
         sceneIsDark = forcedDark
         sceneLuma = nil
@@ -683,6 +687,9 @@ final class Pipeline {
         // Owner mode: pin the owner to the body whose head this face sits on.
         if ownerMode, let best, best.match.similarity >= FaceVerification.Settings().threshold {
             let body = ownerTracker.sawOwner(faceCenter: best.face.center, heads: lastHeads, at: output.time)
+            if body != nil, ownerName != best.match.face.name {
+                ownerName = best.match.face.name
+            }
             Self.logger.notice(
                 "Owner face \(best.match.similarity, format: .fixed(precision: 3)) pinned to body \(body.map(String.init) ?? "none", privacy: .public) of \(self.lastHeads.count, privacy: .public)"
             )

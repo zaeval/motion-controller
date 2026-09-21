@@ -172,7 +172,7 @@ extension TutorialStep {
 
     var instruction: String {
         switch self {
-        case .enterGestures, .backToGestures: "주먹을 쥐고 잠깐 그대로 있어 보세요."
+        case .enterGestures, .backToGestures: "주먹을 쥔 채 손을 뒤로 빼 보세요. 제스처 모드가 아닐 때 하면 제스처 모드로, 제스처 모드에서 하면 IDLE로 가는 토글이에요."
         case .enterDesktop: "손바닥을 카메라에 보여 보세요. 바로 화면에 보라색 테두리가 생깁니다."
         case .switchDesktop: "그대로 손을 옆으로 크게 쓸어 보세요."
         case .playPause: "주먹으로 카메라를 두 번 노크하듯 톡톡 내밀어 보세요."
@@ -193,7 +193,7 @@ extension TutorialStep {
 
     var tip: String? {
         switch self {
-        case .enterGestures, .backToGestures: "오버레이의 '✊ 제스처 모드로 전환' 막대가 다 차면 돼요."
+        case .enterGestures, .backToGestures: "주먹을 쥐고 몸 쪽으로 당기듯 빼면 돼요. 다시 하려면 손을 한 번 폈다가 쥐어 주세요."
         case .enterDesktop: "이 모드에서는 좌우로 쓸기와 팡팡(재생/정지)만 인식해요. 나올 때는 주먹을 쥐거나 검지로 톡톡 하세요."
         case .switchDesktop: "오른쪽으로 쓸면 다음, 왼쪽으로 쓸면 이전 데스크톱이에요. 연속으로 할 때는 손을 멈췄다가(0.15초) 다시 쓸면 돼요."
         case .playPause: "손을 앞으로 쭉 내밀 필요는 없어요. 문을 두드리듯 가볍게 두 번이면 됩니다. 손을 펴면 취소되고, 주먹을 뒤로 뺀 채 가만히 있으면 IDLE이 돼요."

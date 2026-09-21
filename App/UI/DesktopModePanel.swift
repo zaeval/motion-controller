@@ -94,7 +94,6 @@ struct DesktopModeView: View {
     }
 
     private var hint: String {
-        if pipeline.modeProgress > 0 { return "✊ 주먹을 유지하면 제스처 모드로" }
         return pipeline.swipeArmed ? "준비됨 · 손을 옆으로 쓸어 주세요" : "손을 멈추면 곧 준비됩니다"
     }
 

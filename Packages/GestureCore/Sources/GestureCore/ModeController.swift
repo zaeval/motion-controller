@@ -17,13 +17,13 @@ public enum InteractionMode: String, Codable, Sendable {
 public enum ModeChangeReason: String, Codable, Sendable {
     /// ☝️ tapped twice.
     case doubleTap
-    /// ✊ held.
+    /// ✊ pulled back outside gesture mode: back to gesture mode.
     case fist
     /// 🖐 held still with the palm to the camera.
     case palmHold
     /// Desktop mode saw a gesture that isn't the palm: back to gesture mode, where that gesture means something.
     case otherPose
-    /// ✊ pulled back.
+    /// ✊ pulled back in gesture mode: parked.
     case idleGesture
     /// Pointer mode's hand was gone too long.
     case handLost
@@ -40,18 +40,17 @@ public enum ModeChangeReason: String, Codable, Sendable {
 /// - ☝️ tapped twice → pointer mode, from any mode but pointer.
 /// - 🖐 held still → desktop mode, from gesture mode. Its own hold, longer than the swipe's arming hold, so the
 ///   palm that enters the mode has already armed the first sweep.
-/// - ✊ held → gesture mode, from idle, pointer or desktop mode. Never while a pinch holds the mouse button, and the
-///   fist that just parked recognition has to open (or leave) first.
-/// - ✊ pulled back → idle, from gesture or pointer mode; but not by the fist that just resumed from idle, which has to
-///   open first, or lowering it would park again.
+/// - ✊ pulled back toggles (the user's call, 2026-09-21): gesture mode parks in idle, and idle and pointer mode come
+///   back to gesture mode. Desktop mode counts as gesture mode here, being a palm away from it: the recorded parks
+///   show the palm on the way to the fist, and that palm opens desktop mode before the pull lands. It replaced the
+///   held fist that used to open gesture mode, so one gesture both parks and resumes. Never while a pinch holds the mouse button, and the fist that just toggled has to open (or
+///   leave) before it can toggle again, or lowering it would toggle straight back.
 /// - Nobody in front of the camera for a while → idle, except in pointer mode, where the hand hides the face;
 ///   pointer mode whose hand has been gone a while → gesture mode, and absence parks it from there. Desktop mode
 ///   parks on absence like gesture mode, and its hand going missing does nothing: there is no cursor to strand, and
 ///   a hand that leaves between two sweeps should find the mode still there.
 public struct ModeController: Sendable {
     public struct Settings: Codable, Equatable, Sendable {
-        /// A tap folds the hand for a frame or two; a fist has to outlast that.
-        public var fist = GestureStateMachine.Timing(candidateFrames: 3, holdSeconds: 0.35, cooldownSeconds: 0.5)
         /// No real hold: a palm opens desktop mode as directly as a fist opens gesture mode (the user's call,
         /// 2026-09-14 — waiting 0.6 s for it felt like being kept out of the mode). Three frames and a hair, so a
         /// single mistracked frame in some other gesture can't flip the mode.
@@ -66,7 +65,7 @@ public struct ModeController: Sendable {
         public var handLostExit: TimeInterval = 3.0
         /// Recognition parks once nobody has been in front of the camera this long.
         public var absenceTimeout: TimeInterval = 5.0
-        /// A hand gone this long has let go of the fist that parked recognition.
+        /// A hand gone this long has let go of the fist that last toggled the mode.
         public var fistReleaseAfterLoss: TimeInterval = 0.3
 
         public init() {}
@@ -74,7 +73,6 @@ public struct ModeController: Sendable {
 
     public var settings: Settings {
         didSet {
-            fist.timing = settings.fist
             palm.timing = settings.palmHold
             other.timing = settings.otherPose
         }
@@ -83,7 +81,6 @@ public struct ModeController: Sendable {
     public private(set) var mode: InteractionMode
     /// Why `mode` last changed; nil until it has.
     public private(set) var lastChangeReason: ModeChangeReason?
-    private var fist: GestureStateMachine
     private var palm: GestureStateMachine
     /// Desktop mode's way back to gesture mode when the hand makes some other gesture's shape.
     private var other: GestureStateMachine
@@ -93,14 +90,12 @@ public struct ModeController: Sendable {
     private var sawHandInPointerMode = false
     private var firstFrame: TimeInterval?
     private var lastPersonSeen: TimeInterval?
-    private var parkingFistHeld = false
-    /// The fist that just resumed recognition from idle is still closed, and can't park it again.
-    private var wakingFistHeld = false
+    /// The fist that just toggled the mode is still closed, and can't toggle it again until it opens.
+    private var toggleFistHeld = false
 
     public init(settings: Settings = Settings(), mode: InteractionMode = .normal) {
         self.settings = settings
         self.mode = mode
-        fist = GestureStateMachine(timing: settings.fist)
         palm = GestureStateMachine(timing: settings.palmHold)
         other = GestureStateMachine(timing: settings.otherPose)
     }
@@ -121,19 +116,16 @@ public struct ModeController: Sendable {
         // Pointer mode rides out a lost person: the hand in front of the face is exactly what the cursor follows.
         // Its hand going missing drops it to gesture mode, and absence parks from there.
         if mode != .pointer, time - (lastPersonSeen ?? start) >= settings.absenceTimeout {
-            _ = fist.update(detected: false, handStill: true, at: time)
             _ = palm.update(detected: false, handStill: true, at: time)
             return change(to: .idle, because: .absence)
         }
 
         guard let reading else {
-            _ = fist.update(detected: false, handStill: true, at: time)
             _ = palm.update(detected: false, handStill: true, at: time)
             let since = handLostSince ?? time
             handLostSince = since
             if time - since >= settings.fistReleaseAfterLoss {
-                parkingFistHeld = false
-                wakingFistHeld = false
+                toggleFistHeld = false
             }
             guard mode == .pointer, sawHandInPointerMode, time - since >= settings.handLostExit else { return nil }
             return change(to: .normal, because: .handLost)
@@ -141,13 +133,15 @@ public struct ModeController: Sendable {
         handLostSince = nil
         if mode == .pointer { sawHandInPointerMode = true }
         if !reading.isFist {
-            parkingFistHeld = false
-            wakingFistHeld = false
+            toggleFistHeld = false
         }
 
-        if reading.idleGesture, mode != .idle, !wakingFistHeld {
-            let changed = change(to: .idle, because: .idleGesture)
-            parkingFistHeld = true
+        // ✊ pulled back: gesture mode (desktop mode included) parks, idle and the cursor come back to gesture mode.
+        if reading.idleGesture, !toggleFistHeld, !holdingButton {
+            let changed = mode == .normal || mode == .desktop
+                ? change(to: .idle, because: .idleGesture)
+                : change(to: .normal, because: .fist)
+            toggleFistHeld = true
             return changed
         }
         if reading.tap == .left, mode != .pointer {
@@ -164,7 +158,7 @@ public struct ModeController: Sendable {
             return change(to: .desktop, because: .palmHold)
         }
         // Zoom and the volume/brightness pinch live in gesture mode, so desktop mode hands the hand back as soon as
-        // it makes one of their shapes. The fist below is still the deliberate way out.
+        // it makes one of their shapes. ✊ pulled back is still the deliberate way out.
         let elsewhere: Set<StaticPose> = [.threeFingers, .victory, .pointIndex, .pinch]
         let leaving = mode == .desktop && !reading.isFist && (reading.isPinching || reading.pose.map(elsewhere.contains) == true)
         // Only from a hand that is holding still: a sweeping hand blurs and turns until it reads as a pinch or three
@@ -172,12 +166,7 @@ public struct ModeController: Sendable {
         if other.update(detected: leaving, handStill: reading.isStill, at: time) {
             return change(to: .normal, because: .otherPose)
         }
-        let fisting = mode != .normal && reading.isFist && !parkingFistHeld && !holdingButton
-        guard fist.update(detected: fisting, handStill: true, at: time) else { return nil }
-        let resuming = mode == .idle
-        let changed = change(to: .normal, because: .fist)
-        wakingFistHeld = resuming
-        return changed
+        return nil
     }
 
     /// Switches directly: the menu toggle, recognition turning off, or the screen locking. Returns the mode when it
@@ -187,22 +176,20 @@ public struct ModeController: Sendable {
         change(to: newMode, because: reason)
     }
 
-    /// Hold progress (0...1) toward the mode the current one leads to, for the overlay: a fist everywhere but
-    /// gesture mode, and the palm's hold toward desktop mode inside it.
+    /// Hold progress (0...1) toward desktop mode, for the overlay: the palm's, in gesture mode. The toggle between
+    /// gesture mode and idle is a single motion with nothing to fill up.
     public func transitionProgress(at time: TimeInterval) -> Double {
-        mode == .normal ? palm.holdProgress(at: time) : fist.holdProgress(at: time)
+        mode == .normal ? palm.holdProgress(at: time) : 0
     }
 
     private mutating func change(to newMode: InteractionMode, because reason: ModeChangeReason) -> InteractionMode? {
         guard newMode != mode else { return nil }
         mode = newMode
         lastChangeReason = reason
-        fist.reset()
         palm.reset()
         firstTap = nil
         handLostSince = nil
         sawHandInPointerMode = false
-        wakingFistHeld = false
         return newMode
     }
 }
