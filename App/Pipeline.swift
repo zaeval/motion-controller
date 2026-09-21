@@ -581,6 +581,11 @@ final class Pipeline {
         onTutorialEvent?(.securityModeChosen)
     }
 
+    /// The same for owner mode.
+    func confirmOwnerChoice() {
+        onTutorialEvent?(.ownerModeChosen)
+    }
+
     func revealIntruderPhotos() {
         try? FileManager.default.createDirectory(at: Self.intruderPhotosDirectory, withIntermediateDirectories: true)
         NSWorkspace.shared.open(Self.intruderPhotosDirectory)

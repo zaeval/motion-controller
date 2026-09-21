@@ -19,6 +19,8 @@ public enum TutorialEvent: Equatable, Sendable {
     case cursorCalibrated
     /// The user left security mode on, or switched it off, in the tutorial.
     case securityModeChosen
+    /// The same for owner mode.
+    case ownerModeChosen
 }
 
 /// The tutorial's missions, in the order they're played: every gesture and mode, each cleared by actually doing it.
@@ -29,7 +31,7 @@ public enum TutorialStep: String, CaseIterable, Sendable {
     case backToGestures, park
     /// The things worth settling once, offered at the end rather than taught: enrolling and calibrating open their
     /// own panels, and security mode is a switch to understand and leave on or off.
-    case enrollFace, securityMode, calibrateCursor
+    case enrollFace, securityMode, ownerMode, calibrateCursor
 
     /// The mode the mission's gesture works in; nil when it's the one that changes the mode, or when it isn't a
     /// gesture at all.
@@ -38,7 +40,8 @@ public enum TutorialStep: String, CaseIterable, Sendable {
         case .playPause, .zoom, .volumeBrightness: .normal
         case .switchDesktop: .desktop
         case .moveCursor, .click, .rightClick, .scroll, .drag, .backToGestures: .pointer
-        case .enterGestures, .enterDesktop, .enterCursor, .park, .enrollFace, .securityMode, .calibrateCursor: nil
+        case .enterGestures, .enterDesktop, .enterCursor, .park, .enrollFace, .securityMode, .ownerMode, .calibrateCursor:
+            nil
         }
     }
 
@@ -49,7 +52,7 @@ public enum TutorialStep: String, CaseIterable, Sendable {
 
     /// Missions that settle a setting instead of teaching a gesture.
     public var isSetup: Bool {
-        opensPanel || self == .securityMode
+        opensPanel || self == .securityMode || self == .ownerMode
     }
 
     /// How many times the mission has to be done before it is cleared. Three, so a gesture is learnt rather than
@@ -100,7 +103,7 @@ public struct TutorialCourse: Equatable, Sendable {
         case (.enterDesktop, .mode(.desktop, because: .palmHold)):
             clears = true
         case (.enrollFace, .faceEnrolled), (.calibrateCursor, .cursorCalibrated),
-             (.securityMode, .securityModeChosen):
+             (.securityMode, .securityModeChosen), (.ownerMode, .ownerModeChosen):
             clears = true
         case (.switchDesktop, .desktopSwitched), (.playPause, .playPaused), (.volumeBrightness, .volumeOrBrightness),
              (.click, .clicked), (.rightClick, .rightClicked), (.scroll, .scrolled), (.drag, .dragged):

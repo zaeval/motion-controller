@@ -16,7 +16,7 @@ struct TutorialCourseTests {
         + thrice([.clicked]) + thrice([.rightClicked]) + thrice([.scrolled]) + thrice([.dragged])
         + thrice([.mode(.normal, because: .fist)])
         + thrice([.mode(.idle, because: .idleGesture)])
-        + [.faceEnrolled, .securityModeChosen, .cursorCalibrated]
+        + [.faceEnrolled, .securityModeChosen, .ownerModeChosen, .cursorCalibrated]
 
     private static func thrice(_ events: [TutorialEvent]) -> [TutorialEvent] {
         events + events + events
@@ -75,7 +75,9 @@ struct TutorialCourseTests {
 
     /// The two setup missions are a button press, not a gesture: once is enough.
     @Test func eachGestureMissionTakesThreeGoesAndTheSetupOnesOne() {
-        #expect(TutorialStep.allCases.filter { $0.repetitions == 1 } == [.enrollFace, .securityMode, .calibrateCursor])
+        #expect(
+            TutorialStep.allCases.filter { $0.repetitions == 1 } == [.enrollFace, .securityMode, .ownerMode, .calibrateCursor]
+        )
         #expect(TutorialStep.playPause.repetitions == 3)
     }
 
@@ -102,10 +104,12 @@ struct TutorialCourseTests {
     @Test func theLastMissionsSettleSettingsRatherThanWaitingForAGesture() {
         #expect(TutorialStep.enrollFace.opensPanel)
         #expect(TutorialStep.calibrateCursor.opensPanel)
-        // Security mode is a switch to understand, not a panel to open.
+        // Security mode and owner mode are switches to understand, not panels to open.
         #expect(!TutorialStep.securityMode.opensPanel)
         #expect(TutorialStep.securityMode.isSetup)
-        #expect(TutorialStep.allCases.suffix(3) == [.enrollFace, .securityMode, .calibrateCursor])
+        #expect(!TutorialStep.ownerMode.opensPanel)
+        #expect(TutorialStep.ownerMode.isSetup)
+        #expect(TutorialStep.allCases.suffix(4) == [.enrollFace, .securityMode, .ownerMode, .calibrateCursor])
         #expect(!TutorialStep.switchDesktop.opensPanel)
         #expect(!TutorialStep.switchDesktop.isSetup)
     }

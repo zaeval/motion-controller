@@ -134,6 +134,7 @@ extension TutorialStep {
         case .switchDesktop: "🖐↔︎"
         case .playPause: "🖐⏯"
         case .securityMode: "🛡"
+        case .ownerMode: "🙋"
         case .enrollFace: "🙂"
         case .calibrateCursor: "🎯"
         case .zoom: "🤟"
@@ -155,6 +156,7 @@ extension TutorialStep {
         case .switchDesktop: "데스크톱 전환"
         case .playPause: "재생/정지"
         case .securityMode: "보안 모드"
+        case .ownerMode: "주인만 인식"
         case .enrollFace: "얼굴 등록 (화면 잠금)"
         case .calibrateCursor: "커서 영역 보정"
         case .zoom: "확대/축소"
@@ -177,6 +179,7 @@ extension TutorialStep {
         case .switchDesktop: "그대로 손을 옆으로 크게 쓸어 보세요."
         case .playPause: "주먹으로 카메라를 두 번 노크하듯 톡톡 내밀어 보세요."
         case .securityMode: "자리가 비었다가 누가 나타나면 그 사람이 등록된 사람인지 확인합니다. 등록되지 않은 얼굴이 다섯 번 연속 잡히면 (약 1.5초) 화면이 바로 까매지고 잠깁니다. 화면이 까매지기까지 10초를 기다리는 동안 다른 사람이 앉는 경우를 막아요. 아래에서 켜고 끌 수 있고, 정한 뒤 확인을 누르면 다음으로 넘어갑니다."
+        case .ownerMode: "주인만 인식을 켜 두면 카메라에 여러 사람이 있어도 등록된 주인의 손만 입력으로 받습니다. 옆 사람이 손을 흔들어도 커서가 움직이거나 제스처가 실행되지 않아요. 주인이 확인되면 오버레이에 이름이 뜹니다. 아래에서 켜고 끌 수 있고, 정한 뒤 확인을 누르면 다음으로 넘어갑니다."
         case .enrollFace: "얼굴을 등록하면 사람이 없을 때 화면이 까매지고 잠깁니다. 건너뛰어도 됩니다."
         case .calibrateCursor: "화면 네 모서리를 검지로 가리키면 커서가 손 위치에 정확히 붙습니다. 모서리마다 버튼을 눌러 넘어가고, 네 모서리를 두 번 돌아 평균을 씁니다."
         case .zoom: "세 손가락을 펴고 위로 올려 확대, 아래로 내려 축소해 보세요."
@@ -198,6 +201,7 @@ extension TutorialStep {
         case .switchDesktop: "오른쪽으로 쓸면 다음, 왼쪽으로 쓸면 이전 데스크톱이에요. 연속으로 할 때는 손을 멈췄다가(0.15초) 다시 쓸면 돼요."
         case .playPause: "손을 앞으로 쭉 내밀 필요는 없어요. 문을 두드리듯 가볍게 두 번이면 됩니다. 손을 펴면 취소되고, 주먹을 뒤로 뺀 채 가만히 있으면 IDLE이 돼요."
         case .securityMode: "모르는 얼굴로 잠길 때는 그 순간 사진도 두 장 남겨요. 앉아 있는 동안에는 확인을 돌리지 않아서 평소 속도 그대로예요. 등록된 얼굴이 보이면 확인이 끝나고, 얼굴이 안 보이거나 너무 멀거나 방이 어두우면 그냥 둡니다. Touch ID·암호로 푼 뒤 2분간은 얼굴로 다시 잠그지 않아요. 메뉴바에서 언제든 켜고 끌 수 있어요."
+        case .ownerMode: "혼자 있을 때는 평소와 똑같이 동작하고 얼굴 확인도 돌리지 않아요. 두 명 이상일 때 주인을 아직 못 찾았으면 아무 손도 받지 않고 오버레이에 '주인 확인 중'이 떠요. 카메라를 한 번 봐 주면 풀려요. 메뉴바에서 언제든 켜고 끌 수 있어요."
         case .enrollFace: "여러 번 등록하면 인식이 좋아져요. 메뉴에서 언제든 다시 할 수 있어요."
         case .calibrateCursor: "커서가 손끝을 따라가요. 측정이 이상하면 '다시 측정'을 누르면 돼요. 메뉴의 '커서 영역 보정'으로 언제든 다시 할 수 있어요."
         case .zoom: "새끼손가락은 꼭 접어 주세요 — 네 손가락이 다 펴지면 손바닥으로 읽혀서 데스크탑 전환 모드로 갑니다. 확대가 남으면 ⌥⌘8로 끄세요."
@@ -319,6 +323,23 @@ struct TutorialView: View {
                         .wrapping()
                 }
                 Button("이대로 할게요") { pipeline.confirmSecurityChoice() }
+                    .controlSize(.large)
+            }
+        } else if step == .ownerMode {
+            VStack(alignment: .leading, spacing: 8) {
+                Toggle("주인만 인식 켜기", isOn: Binding(
+                    get: { pipeline.ownerMode },
+                    set: { pipeline.ownerMode = $0 }
+                ))
+                .toggleStyle(.switch)
+                .disabled(pipeline.enrolledFaces.isEmpty || !pipeline.faceUnlockAvailable)
+                if pipeline.enrolledFaces.isEmpty || !pipeline.faceUnlockAvailable {
+                    Text("얼굴을 등록해야 주인을 알아볼 수 있어요. 앞 단계에서 등록하거나 나중에 메뉴에서 켜 주세요.")
+                        .font(.callout)
+                        .foregroundStyle(.orange)
+                        .wrapping()
+                }
+                Button("이대로 할게요") { pipeline.confirmOwnerChoice() }
                     .controlSize(.large)
             }
         }
