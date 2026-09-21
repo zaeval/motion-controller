@@ -6,16 +6,29 @@ import GestureCore
 import os
 import Vision
 
-/// Embeds the largest face in a camera frame with AdaFace IR-18, a few times a second and only while wanted: while
-/// the screen is locked, and while the owner enrolls. One frame at a time; frames that arrive while busy are dropped.
+/// Embeds the faces in a camera frame with AdaFace IR-18, a few times a second and only while wanted: while the
+/// screen is locked, while the owner enrolls, and while owner mode has to tell people apart. One frame at a time;
+/// frames that arrive while busy are dropped. Several faces because the owner isn't always the biggest one in the
+/// room — the lock compares against whichever is closest to somebody enrolled, and owner mode needs to know which
+/// body the match belongs to.
 final class FaceSource: Sendable {
+    struct Face: Sendable {
+        let embedding: [Float]
+        /// Height as a share of the image height.
+        let height: Double
+        /// The middle of the face, in image-height units with y up: the same frame body joints are in.
+        let center: Vec2
+    }
+
     struct Output: Sendable {
         let time: TimeInterval
-        /// The largest face's embedding; nil when no face with usable landmarks was found.
-        let embedding: [Float]?
-        /// That face's height as a share of the image height; 0 without one.
-        let faceHeight: Double
+        /// Largest first, at most `maxFaces`.
+        let faces: [Face]
         let milliseconds: Double
+
+        /// The largest face, which is the one enrolling wants.
+        var embedding: [Float]? { faces.first?.embedding }
+        var faceHeight: Double { faces.first?.height ?? 0 }
     }
 
     private struct State: Sendable {
@@ -29,6 +42,8 @@ final class FaceSource: Sendable {
     /// Checks are only asked for in bursts — while locked, while enrolling, and while somebody who just turned up is
     /// being checked — because each one costs about a quarter of the frame rate hand tracking runs at.
     private static let interval: TimeInterval = 0.25
+    /// Faces embedded per check. Three covers the owner plus company without the cost growing with the room.
+    private static let maxFaces = 3
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "Face")
     private let state = OSAllocatedUnfairLock(initialState: State())
     private let embedder = OSAllocatedUnfairLock<FaceEmbedder?>(initialState: FaceEmbedder.load())
@@ -67,29 +82,36 @@ final class FaceSource: Sendable {
         Task.detached(priority: .utility) {
             let clock = ContinuousClock()
             let start = clock.now
-            var embedding: [Float]?
-            var faceHeight = 0.0
+            var found: [Face] = []
             do {
                 let size = CGSize(width: CVPixelBufferGetWidth(buffer), height: CVPixelBufferGetHeight(buffer))
-                let faces = try await DetectFaceLandmarksRequest().perform(on: buffer)
-                if let face = faces.max(by: { $0.boundingBox.height < $1.boundingBox.height }),
-                   let landmarks = face.landmarks,
-                   let pupil = landmarks.leftPupil.pointsInImageCoordinates(size, origin: .upperLeft).first,
-                   let otherPupil = landmarks.rightPupil.pointsInImageCoordinates(size, origin: .upperLeft).first,
-                   let points = FaceAlignment.fivePoints(
-                       pupils: (pupil, otherPupil),
-                       noseCrest: landmarks.noseCrest.pointsInImageCoordinates(size, origin: .upperLeft),
-                       outerLips: landmarks.outerLips.pointsInImageCoordinates(size, origin: .upperLeft)
-                   ),
-                   FaceAlignment.isPlausible(points, faceWidth: face.boundingBox.width * size.width) {
-                    faceHeight = face.boundingBox.height
-                    embedding = try embedder.embed(buffer, points: points)
+                let aspect = size.width / size.height
+                let detected = try await DetectFaceLandmarksRequest().perform(on: buffer)
+                    .sorted { $0.boundingBox.height > $1.boundingBox.height }
+                    .prefix(Self.maxFaces)
+                for face in detected {
+                    guard let landmarks = face.landmarks,
+                          let pupil = landmarks.leftPupil.pointsInImageCoordinates(size, origin: .upperLeft).first,
+                          let otherPupil = landmarks.rightPupil.pointsInImageCoordinates(size, origin: .upperLeft).first,
+                          let points = FaceAlignment.fivePoints(
+                              pupils: (pupil, otherPupil),
+                              noseCrest: landmarks.noseCrest.pointsInImageCoordinates(size, origin: .upperLeft),
+                              outerLips: landmarks.outerLips.pointsInImageCoordinates(size, origin: .upperLeft)
+                          ),
+                          FaceAlignment.isPlausible(points, faceWidth: face.boundingBox.width * size.width),
+                          let embedding = try embedder.embed(buffer, points: points)
+                    else { continue }
+                    let box = face.boundingBox.cgRect
+                    found.append(Face(
+                        embedding: embedding, height: face.boundingBox.height,
+                        center: Vec2(box.midX * aspect, box.midY)
+                    ))
                 }
             } catch {
                 Self.logger.error("Face check failed: \(String(describing: error), privacy: .public)")
             }
             let output = Output(
-                time: time, embedding: embedding, faceHeight: faceHeight,
+                time: time, faces: found,
                 milliseconds: Double(start.duration(to: clock.now).components.attoseconds) / 1e15
                     + Double(start.duration(to: clock.now).components.seconds) * 1_000
             )

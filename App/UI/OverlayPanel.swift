@@ -92,6 +92,8 @@ struct OverlayView: View {
             return "🌑 조도 부족 · 제스처 인식 중지\(luma)"
         }
         guard pipeline.personPresent else { return pipeline.mode == .idle ? "사람 없음" : "사람 없음 · 곧 IDLE" }
+        // Owner mode with company and nobody recognized: nothing is acting on, so say so rather than look broken.
+        if pipeline.ownerBlocked { return "🙋 주인 확인 중 · 카메라를 봐 주세요" }
         switch pipeline.mode {
         case .idle: return idleDetail
         case .normal: return gestureDetail

@@ -135,9 +135,12 @@ struct DebugPreviewView: View {
         let face = count == 0 ? "얼굴 미등록" : "얼굴 \(count)명"
         let lock = pipeline.isLocked ? "🔒 잠김" : pipeline.lockEnabled ? "잠금 켜짐" : "잠금 꺼짐"
         let security = pipeline.securityMode ? " · 🛡 보안" : ""
+        let owner = pipeline.ownerMode
+            ? (pipeline.ownerInView ? " · 🙋 주인 확인됨" : pipeline.ownerBlocked ? " · 🙋 주인 미확인 (입력 보류)" : " · 🙋 주인만 인식")
+            : ""
         let who = pipeline.lastFaceMatch.map { " (\($0))" } ?? ""
         let similarity = pipeline.lastFaceSimilarity.map { String(format: " · 유사도 %.2f", $0) + who } ?? ""
-        return "\(lock)\(security) · \(face)\(similarity)"
+        return "\(lock)\(security)\(owner) · \(face)\(similarity)"
     }
 
     private var pointerLine: String {

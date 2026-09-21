@@ -55,6 +55,8 @@ final class Pipeline {
     private static let lockKey = "screenLock"
     /// Whether a face matching nobody locks the screen on the spot.
     private static let securityKey = "securityMode"
+    /// Whether only the owner's hands drive anything.
+    private static let ownerKey = "ownerMode"
     /// Photos of whoever tried to use the Mac while it was locked.
     static let intruderPhotosDirectory = URL.applicationSupportDirectory
         .appending(path: "MotionController/Intruders", directoryHint: .isDirectory)
@@ -102,6 +104,11 @@ final class Pipeline {
     @ObservationIgnored private var faceVerification = FaceVerification()
     /// Checks the face of whoever turns up after an empty room.
     @ObservationIgnored private var strangerWatch = StrangerWatch()
+    /// Which body is the owner's, while owner mode is on.
+    @ObservationIgnored private var ownerTracker = OwnerTracker()
+    /// The heads Vision saw on the last frame, so a face check can say whose face it was.
+    @ObservationIgnored private var lastHeads: [Vec2?] = []
+    @ObservationIgnored private var lastBodyCount = 0
     /// `MC_STRANGER_TEST=1`: every face read as matching nobody, so the immediate lock can be tried without a second
     /// person. The owner's own face locks the screen then; Touch ID is the way back in.
     @ObservationIgnored private let strangerTestMode = ProcessInfo.processInfo.environment["MC_STRANGER_TEST"] != nil
@@ -196,6 +203,10 @@ final class Pipeline {
     private(set) var lastFaceMatch: String?
     /// Photos saved of people trying to use the Mac while it was locked.
     private(set) var intruderPhotoCount = 0
+    /// Owner mode has the owner in view and is following them.
+    private(set) var ownerInView = false
+    /// Owner mode is holding everything back: more than one person in view and none of them known to be the owner.
+    private(set) var ownerBlocked = false
 
     /// What a zoom gesture will ask macOS for, and whether that is the screen or just the app in front. Read when
     /// the tutorial shows it, since the user can change it in System Settings while this runs.
@@ -223,6 +234,19 @@ final class Pipeline {
             strangerWatch.reset()
             updateFaceChecks()
             logMotion(securityMode ? "🛡 보안 모드 켬" : "🛡 보안 모드 끔")
+        }
+    }
+
+    /// The menu's "주인만 인식": with more than one person in view, only the owner's hands do anything, and hands
+    /// nobody can be sure about do nothing (the user's call, 2026-09-21). Needs an enrolled face to know who that is.
+    var ownerMode = UserDefaults.standard.bool(forKey: Pipeline.ownerKey) {
+        didSet {
+            UserDefaults.standard.set(ownerMode, forKey: Self.ownerKey)
+            ownerTracker.reset()
+            ownerInView = false
+            ownerBlocked = false
+            updateFaceChecks()
+            logMotion(ownerMode ? "🙋 주인만 인식 켬" : "🙋 주인만 인식 끔")
         }
     }
 
@@ -395,6 +419,9 @@ final class Pipeline {
         screen.release()
         screenPresence = ScreenPresence()
         strangerWatch.reset()
+        ownerTracker.reset()
+        ownerInView = false
+        ownerBlocked = false
         sceneLight = SceneLight()
         sceneIsDark = forcedDark
         sceneLuma = nil
@@ -588,9 +615,9 @@ final class Pipeline {
         NSWorkspace.shared.open(Self.fixturesDirectory)
     }
 
-    /// The hand to analyze until the operator lock exists: the preferred side if visible, else the largest hand.
+    /// The hand to analyze in a recorded frame: the preferred side if visible, else the largest hand.
     static func trackedHand(in frame: PoseFrame, preferring side: Chirality) -> HandFrame? {
-        hands(in: frame, cursorSide: nil, preferring: side).cursor
+        hands(from: frame.allHands, cursorSide: nil, preferring: side).cursor
     }
 
     /// The hand that drives everything, and the other one if there is a second hand in view.
@@ -599,9 +626,9 @@ final class Pipeline {
     /// hand. The other hand only counts when its own chirality is known and different: two observations of the same
     /// hand would otherwise take turns being "the other one" and click by themselves.
     static func hands(
-        in frame: PoseFrame, cursorSide: Chirality?, preferring side: Chirality
+        from allHands: [HandFrame], cursorSide: Chirality?, preferring side: Chirality
     ) -> (cursor: HandFrame?, other: HandFrame?) {
-        var hands = frame.allHands
+        var hands = allHands
             .filter { $0.handSize != nil }
             .sorted { ($0.handSize ?? 0) > ($1.handSize ?? 0) }
         let index = cursorSide.flatMap { claimed in hands.firstIndex { $0.chirality == claimed } }
@@ -644,17 +671,28 @@ final class Pipeline {
             return
         }
         guard !enrolledFaces.isEmpty else { return }
-        // Whoever is closest to somebody enrolled: the one who can unlock, or nobody at all.
-        let match = output.embedding.flatMap { enrolledFaces.bestMatch(for: $0) }
+        // Whoever in view is closest to somebody enrolled: the one who can unlock, or nobody at all.
+        let matches = output.faces.compactMap { face in
+            enrolledFaces.bestMatch(for: face.embedding).map { (face: face, match: $0) }
+        }
+        let best = matches.max { $0.match.similarity < $1.match.similarity }
+        let match = best?.match
         let similarity = match?.similarity
         lastFaceSimilarity = similarity
         lastFaceMatch = match?.face.name
+        // Owner mode: pin the owner to the body whose head this face sits on.
+        if ownerMode, let best, best.match.similarity >= FaceVerification.Settings().threshold {
+            let body = ownerTracker.sawOwner(faceCenter: best.face.center, heads: lastHeads, at: output.time)
+            Self.logger.notice(
+                "Owner face \(best.match.similarity, format: .fixed(precision: 3)) pinned to body \(body.map(String.init) ?? "none", privacy: .public) of \(self.lastHeads.count, privacy: .public)"
+            )
+        }
         guard isLocked else {
             // Security mode: a face belonging to nobody locks the screen before they get to use it.
             guard canLockOutStrangers else { return }
             let vetted = similarity.map { strangerTestMode ? 0 : $0 }
             let stranger = strangerWatch.faceChecked(
-                similarity: vetted, faceHeight: output.faceHeight, at: output.time
+                similarity: vetted, faceHeight: best?.face.height ?? output.faceHeight, at: output.time
             )
             Self.logger.notice(
                 """
@@ -773,7 +811,8 @@ final class Pipeline {
     /// and no embedding of a near-black frame gets to be compared with anyone's.
     private func updateFaceChecks() {
         let wanted = isRunning && !sceneIsDark
-            && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty) || (strangerWatch.isChecking && canLockOutStrangers))
+            && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty) || (strangerWatch.isChecking && canLockOutStrangers)
+                || (ownerMode && !enrolledFaces.isEmpty && lastBodyCount >= 2))
         if wanted != faceSource.wanted {
             Self.logger.notice(
                 """
@@ -957,7 +996,23 @@ final class Pipeline {
 
     private func analyze(_ frame: PoseFrame) {
         let time = frame.timestamp
-        let tracked = Self.hands(in: frame, cursorSide: cursorHandSide, preferring: preferredHand)
+        let heads = frame.bodies.map { $0[.nose] ?? $0[.neck] }
+        lastHeads = heads
+        // Owner mode: a face check pins the owner to a body, and only that body's hands drive anything. With one
+        // person in view there is nobody to confuse them with, so everything works as usual until company arrives.
+        let owner = ownerMode ? ownerTracker.follow(heads: heads, at: time) : nil
+        let allowed = ownerMode ? ownerTracker.allowedHands(in: frame, owner: owner) : frame.allHands
+        if ownerMode {
+            if (owner != nil) != ownerInView { ownerInView = owner != nil }
+            let blocked = owner == nil && frame.bodies.count >= 2
+            if blocked != ownerBlocked { ownerBlocked = blocked }
+        }
+        if (frame.bodies.count >= 2) != (lastBodyCount >= 2) {
+            lastBodyCount = frame.bodies.count
+            updateFaceChecks()
+        }
+        lastBodyCount = frame.bodies.count
+        let tracked = Self.hands(from: allowed, cursorSide: cursorHandSide, preferring: preferredHand)
         updateCursorHandClaim(tracked, at: time)
         // The analyzer sees every frame as it is, dropouts included: its own detectors need the gaps (a swipe that
         // blurred out of tracking fires on one). Everything that watches the hand's shape sees the last reading

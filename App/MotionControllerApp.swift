@@ -47,6 +47,11 @@ private struct MenuContent: View {
             set: { appState.pipeline.securityMode = $0 }
         ))
         .disabled(!appState.pipeline.lockEnabled || appState.pipeline.enrolledFaces.isEmpty)
+        Toggle("주인만 인식 (다른 사람 동작 무시)", isOn: Binding(
+            get: { appState.pipeline.ownerMode },
+            set: { appState.pipeline.ownerMode = $0 }
+        ))
+        .disabled(appState.pipeline.enrolledFaces.isEmpty || !appState.pipeline.faceUnlockAvailable)
         // Not disabled without the model any more: the panel offers to install it.
         Button(appState.pipeline.enrolledFaces.isEmpty ? "얼굴 등록…" : "얼굴 추가…") { appState.showEnrollment() }
             .disabled(!appState.isEnabled)
