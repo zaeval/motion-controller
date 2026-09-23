@@ -117,7 +117,7 @@ struct FaceEnrollmentView: View {
             }
 
             if !pipeline.isRunning {
-                Text("카메라가 멈춰 있어요. 메뉴바에서 제스처 인식이나 화면 잠금을 켜 주세요.")
+                Text("카메라가 멈춰 있어요. 시스템 설정에서 카메라 권한을 확인해 주세요.")
                     .font(.caption)
                     .foregroundStyle(.orange)
             }

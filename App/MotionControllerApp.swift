@@ -26,7 +26,7 @@ private struct MenuContent: View {
 
     var body: some View {
         Toggle("제스처 인식", isOn: $appState.isEnabled)
-        Text("켜기/끄기: ⌃⌥⌘G · 꺼도 화면 잠금은 그대로")
+        Text("켜기/끄기: ⌃⌥⌘G · 꺼도 얼굴 인식·잠금은 그대로")
         Toggle("커서 모드", isOn: Binding(
             get: { appState.pipeline.mode == .pointer },
             set: { appState.pipeline.setPointerMode($0) }

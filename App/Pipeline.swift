@@ -259,13 +259,12 @@ final class Pipeline {
             if !lockEnabled {
                 endLock("🔓 화면 잠금 끔")
             }
-            updateCamera()
         }
     }
 
-    /// The menu's "제스처 인식" and its shortcut. Off, no gesture does anything and recognition stays parked, but the
-    /// camera keeps watching for as long as the lock is on: switching gestures off is not switching the lock off (the
-    /// user's call, 2026-09-23). With the lock off as well nothing is left to watch for, and the camera stops.
+    /// The menu's "제스처 인식" and its shortcut. Off, no gesture does anything and recognition stays parked; the camera
+    /// and everything else it feeds — the dark screen, the lock, security mode, face unlock, owner mode — carry on
+    /// (the user's call, 2026-09-23: switching gestures off switches off gestures, not everything).
     var gesturesEnabled = true {
         didSet {
             guard gesturesEnabled != oldValue else { return }
@@ -275,25 +274,11 @@ final class Pipeline {
                     switchMode(to: newMode)
                 }
             }
-            updateCamera()
             if gesturesEnabled, isRunning, !isLocked, let newMode = modeController.set(.normal) {
                 switchMode(to: newMode)
             }
-            updateFaceChecks()
-            Self.logger.notice(
-                "Gestures \(self.gesturesEnabled ? "on" : "off", privacy: .public); camera \(self.isRunning ? "running" : "stopped", privacy: .public), lock \(self.lockEnabled ? "on" : "off", privacy: .public)"
-            )
-            let camera = gesturesEnabled || lockEnabled ? "" : " · 카메라 끔"
-            logMotion(gesturesEnabled ? "🙌 제스처 인식 켬" : "🙌 제스처 인식 끔\(lockEnabled ? " · 화면 잠금은 계속" : "")\(camera)")
-        }
-    }
-
-    /// The camera runs while anything needs it: gestures, or the lock.
-    private func updateCamera() {
-        if gesturesEnabled || lockEnabled {
-            start()
-        } else {
-            stop()
+            Self.logger.notice("Gestures \(self.gesturesEnabled ? "on" : "off", privacy: .public)")
+            logMotion(gesturesEnabled ? "🙌 제스처 인식 켬" : "🙌 제스처 인식 끔 · 얼굴 인식·잠금은 계속")
         }
     }
 
@@ -441,51 +426,6 @@ final class Pipeline {
             )
             camera.start(deviceID: selectedDeviceID)
         }
-    }
-
-    func stop() {
-        isRunning = false
-        releasePointer()
-        endLock(nil)
-        cancelEnrollment()
-        // Parked: starting again for the lock alone must not resume gestures. Switching gestures on is what does.
-        modeController = ModeController(mode: .idle)
-        mode = modeController.mode
-        modeProgress = 0
-        awaitingSecondTap = false
-        personPresent = false
-        lastPersonTime = -.infinity
-        screen.release()
-        screenPresence = ScreenPresence()
-        strangerWatch.reset()
-        ownerTracker.reset()
-        ownerInView = false
-        ownerBlocked = false
-        ownerName = nil
-        sceneLight = SceneLight()
-        sceneIsDark = forcedDark
-        sceneLuma = nil
-        actionEvaluator.reset()
-        pendingAction = nil
-        camera.stop()
-        if let activity {
-            ProcessInfo.processInfo.endActivity(activity)
-            self.activity = nil
-        }
-        analyzer.reset()
-        readingHold.reset()
-        if isRecording {
-            Self.logger.notice("Recording '\(self.recordingLabel, privacy: .public)' discarded: pipeline stopped")
-            recordingTask?.cancel()
-            recordedFrames = []
-            isRecording = false
-        }
-        latestFrame = nil
-        latestReading = nil
-        activePinchTotals = nil
-        flash = nil
-        stats = Stats()
-        recentOutputs = []
     }
 
     var isCalibrating: Bool { calibrationState != nil }
@@ -874,7 +814,7 @@ final class Pipeline {
     private func updateFaceChecks() {
         let wanted = isRunning && !sceneIsDark
             && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty) || (strangerWatch.isChecking && canLockOutStrangers)
-                || (gesturesEnabled && ownerMode && !enrolledFaces.isEmpty && lastBodyCount >= 2))
+                || (ownerMode && !enrolledFaces.isEmpty && lastBodyCount >= 2))
         if wanted != faceSource.wanted {
             Self.logger.notice(
                 """
@@ -1140,8 +1080,8 @@ final class Pipeline {
             screen.stayAwake(personPresent: present, at: time)
         }
 
-        // Gestures switched off: everything above — the dark screen, the lock, the stranger check — carries on, and
-        // nothing below does.
+        // Gestures switched off: everything above — the dark screen, the lock, the stranger check, owner mode — carries
+        // on, and nothing below does.
         guard gesturesEnabled else { return }
 
         if calibrationState != nil {
