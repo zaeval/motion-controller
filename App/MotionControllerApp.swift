@@ -26,7 +26,7 @@ private struct MenuContent: View {
 
     var body: some View {
         Toggle("제스처 인식", isOn: $appState.isEnabled)
-        Text("켜기/끄기: ⌃⌥⌘G")
+        Text("켜기/끄기: ⌃⌥⌘G · 꺼도 화면 잠금은 그대로")
         Toggle("커서 모드", isOn: Binding(
             get: { appState.pipeline.mode == .pointer },
             set: { appState.pipeline.setPointerMode($0) }
@@ -54,13 +54,13 @@ private struct MenuContent: View {
         .disabled(appState.pipeline.enrolledFaces.isEmpty || !appState.pipeline.faceUnlockAvailable)
         // Not disabled without the model any more: the panel offers to install it.
         Button(appState.pipeline.enrolledFaces.isEmpty ? "얼굴 등록…" : "얼굴 추가…") { appState.showEnrollment() }
-            .disabled(!appState.isEnabled)
+            .disabled(!appState.pipeline.isRunning)
         if !appState.pipeline.enrolledFaces.isEmpty {
             Menu("등록된 얼굴 \(appState.pipeline.enrolledFaces.faces.count)명") {
                 ForEach(appState.pipeline.enrolledFaces.faces) { face in
                     Menu(face.name) {
                         Button("다시 등록…") { appState.showEnrollment(replacing: face) }
-                            .disabled(!appState.isEnabled || !appState.pipeline.faceUnlockAvailable)
+                            .disabled(!appState.pipeline.isRunning || !appState.pipeline.faceUnlockAvailable)
                         Button("삭제") { appState.pipeline.removeFace(id: face.id) }
                     }
                 }

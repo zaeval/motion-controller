@@ -504,7 +504,7 @@ struct TutorialView: View {
 
     /// How to get into the mode the mission needs, when the user isn't in it.
     private func modeHint(for step: TutorialStep) -> String? {
-        guard pipeline.isRunning else { return "제스처 인식이 꺼져 있어요. \(toggleShortcut)로 켜 주세요." }
+        guard pipeline.gesturesEnabled else { return "제스처 인식이 꺼져 있어요. \(toggleShortcut)로 켜 주세요." }
         let mode = pipeline.mode
         switch step.requiredMode {
         case .normal? where mode != .normal:
@@ -528,7 +528,7 @@ struct TutorialView: View {
 
     /// What recognition sees right now.
     private var liveText: String {
-        guard pipeline.isRunning else { return "지금: 제스처 인식이 꺼져 있어요" }
+        guard pipeline.gesturesEnabled else { return "지금: 제스처 인식이 꺼져 있어요" }
         let hand = pipeline.latestReading.map { $0.pose?.displayName ?? "손 보임" } ?? "손 없음"
         let flash = pipeline.flash.map { " · \($0)" } ?? ""
         return "지금: \(pipeline.mode.displayName) 모드 · \(hand)\(flash)"

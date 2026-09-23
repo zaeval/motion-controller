@@ -259,6 +259,41 @@ final class Pipeline {
             if !lockEnabled {
                 endLock("🔓 화면 잠금 끔")
             }
+            updateCamera()
+        }
+    }
+
+    /// The menu's "제스처 인식" and its shortcut. Off, no gesture does anything and recognition stays parked, but the
+    /// camera keeps watching for as long as the lock is on: switching gestures off is not switching the lock off (the
+    /// user's call, 2026-09-23). With the lock off as well nothing is left to watch for, and the camera stops.
+    var gesturesEnabled = true {
+        didSet {
+            guard gesturesEnabled != oldValue else { return }
+            if !gesturesEnabled {
+                cancelCalibration()
+                if !isLocked, let newMode = modeController.set(.idle) {
+                    switchMode(to: newMode)
+                }
+            }
+            updateCamera()
+            if gesturesEnabled, isRunning, !isLocked, let newMode = modeController.set(.normal) {
+                switchMode(to: newMode)
+            }
+            updateFaceChecks()
+            Self.logger.notice(
+                "Gestures \(self.gesturesEnabled ? "on" : "off", privacy: .public); camera \(self.isRunning ? "running" : "stopped", privacy: .public), lock \(self.lockEnabled ? "on" : "off", privacy: .public)"
+            )
+            let camera = gesturesEnabled || lockEnabled ? "" : " · 카메라 끔"
+            logMotion(gesturesEnabled ? "🙌 제스처 인식 켬" : "🙌 제스처 인식 끔\(lockEnabled ? " · 화면 잠금은 계속" : "")\(camera)")
+        }
+    }
+
+    /// The camera runs while anything needs it: gestures, or the lock.
+    private func updateCamera() {
+        if gesturesEnabled || lockEnabled {
+            start()
+        } else {
+            stop()
         }
     }
 
@@ -413,7 +448,8 @@ final class Pipeline {
         releasePointer()
         endLock(nil)
         cancelEnrollment()
-        modeController = ModeController()
+        // Parked: starting again for the lock alone must not resume gestures. Switching gestures on is what does.
+        modeController = ModeController(mode: .idle)
         mode = modeController.mode
         modeProgress = 0
         awaitingSecondTap = false
@@ -502,7 +538,7 @@ final class Pipeline {
     }
 
     func setPointerMode(_ on: Bool) {
-        guard isRunning, let newMode = modeController.set(on ? .pointer : .normal) else { return }
+        guard isRunning, gesturesEnabled, let newMode = modeController.set(on ? .pointer : .normal) else { return }
         switchMode(to: newMode)
     }
 
@@ -838,7 +874,7 @@ final class Pipeline {
     private func updateFaceChecks() {
         let wanted = isRunning && !sceneIsDark
             && (enrollment != nil || (isLocked && !enrolledFaces.isEmpty) || (strangerWatch.isChecking && canLockOutStrangers)
-                || (ownerMode && !enrolledFaces.isEmpty && lastBodyCount >= 2))
+                || (gesturesEnabled && ownerMode && !enrolledFaces.isEmpty && lastBodyCount >= 2))
         if wanted != faceSource.wanted {
             Self.logger.notice(
                 """
@@ -1103,6 +1139,10 @@ final class Pipeline {
         } else {
             screen.stayAwake(personPresent: present, at: time)
         }
+
+        // Gestures switched off: everything above — the dark screen, the lock, the stranger check — carries on, and
+        // nothing below does.
+        guard gesturesEnabled else { return }
 
         if calibrationState != nil {
             updateCalibration(reading, at: time)

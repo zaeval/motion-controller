@@ -24,11 +24,11 @@ final class AppState {
     var isEnabled = true {
         didSet {
             guard isEnabled != oldValue else { return }
+            // The camera is the pipeline's to start and stop: it keeps running for the lock with gestures off.
+            pipeline.gesturesEnabled = isEnabled
             if isEnabled {
-                pipeline.start()
                 overlay.show()
             } else {
-                pipeline.stop()
                 overlay.hide()
                 desktopModePanel.hide()
             }
@@ -107,7 +107,7 @@ final class AppState {
         }
 
         KeyboardShortcuts.onKeyUp(for: .toggleEnabled) { [weak self] in
-            // Switching recognition off would unlock the screen for whoever pressed it.
+            // Nothing changes while the screen is locked but its unlocking.
             guard let self, !self.pipeline.isLocked else { return }
             self.isEnabled.toggle()
         }
