@@ -8,8 +8,9 @@ import os
 ///
 /// The display itself never sleeps while recognition runs: `Pipeline` holds that for as long as the camera runs,
 /// because the user asked (2026-09-14) that the Mac never power down on its own. While someone is seen, user activity
-/// is declared every half minute too. Whether that holds off the screen saver is unverified: it left HIDIdleTime
-/// running in a test.
+/// is declared every half minute too. The display assertion holds off the screen saver as well: on the bot Mac
+/// (2026-09-23, screen saver at its default, password 5 minutes after it) 23 minutes with nobody there and no input
+/// brought up neither the screen saver nor the macOS lock.
 ///
 /// Going dark scales every display's gamma rather than its backlight: no private API, external displays too, and
 /// macOS puts the gamma back if the app quits or crashes while dark. Input is watched on its own clock while dark, so
