@@ -111,13 +111,19 @@ struct OverlayView: View {
     private var desktopDetail: String {
         if let flash = pipeline.flash { return flash }
         if pipeline.awaitingSecondTap { return "☝️ 한 번 더 톡 → 커서 모드" }
+        if pipeline.modeProgress > 0 { return twoFistsProgress }
         return pipeline.swipeArmed ? "🖐 준비됨 · ← → 쓸기" : "🖐 손바닥을 잠시 멈추고 ← → 쓸기"
     }
 
     private var idleDetail: String {
         if let flash = pipeline.flash { return flash }
         if pipeline.awaitingSecondTap { return "☝️ 한 번 더 톡 → 커서 모드" }
-        return "✊ 뒤로 빼면 제스처 · ☝️ 톡톡 커서"
+        if pipeline.modeProgress > 0 { return twoFistsProgress }
+        return "✊✊ 양손 주먹 2초 → 제스처 · ☝️ 톡톡 커서"
+    }
+
+    private var twoFistsProgress: String {
+        "✊✊ 제스처 모드로 전환 \(progressBar(pipeline.modeProgress))"
     }
 
     private var pointerDetail: String {
@@ -129,6 +135,7 @@ struct OverlayView: View {
         guard pipeline.latestReading != nil else { return "손 없음" }
         if status.scrolling { return "✌️ 스크롤" }
         if status.zooming { return "🤟 ↑ 확대 · ↓ 축소" }
+        if pipeline.modeProgress > 0 { return twoFistsProgress }
         // What the other hand is holding, when there is one: it is the hand doing the clicking now.
         if let other = pipeline.secondHandPose {
             let says: String

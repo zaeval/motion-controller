@@ -32,7 +32,7 @@ extension ModeChangeReason {
     var displayName: String {
         switch self {
         case .doubleTap: "톡톡"
-        case .fist: "주먹 뒤로"
+        case .fist: "양손 주먹"
         case .palmHold: "손바닥"
         case .otherPose: "다른 제스처"
         case .idleGesture: "주먹 뒤로"

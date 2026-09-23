@@ -258,8 +258,7 @@ struct GestureFixtureTests {
                 }
                 let label = "\(recording.name) from \(start): \(changes)"
                 if recording.name.contains("IDLE") {
-                    // The same pull parks gesture mode and brings the cursor back to it (2026-09-21).
-                    #expect(changes.last == (start == .normal ? .idle : .normal) && !changes.contains(.pointer), "\(label)")
+                    #expect(changes.last == .idle && !changes.contains(.pointer), "\(label)")
                 } else if recording.name.contains("left-click"), start == .normal {
                     #expect(changes.allSatisfy { $0 == .pointer }, "\(label)")
                 } else if Self.endsOnAnOpenPalm.contains(recording.name), start == .normal {

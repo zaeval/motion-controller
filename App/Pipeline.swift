@@ -649,6 +649,20 @@ final class Pipeline {
         return (cursor, other)
     }
 
+    /// A second hand in view, apart from the cursor's, closed into a fist: the other half of ✊✊, the way back to
+    /// gesture mode. Any chirality, unlike `hands(from:)`'s other hand, since two fists side by side often come back
+    /// unsure which is which; a second read of the cursor hand itself sits right on top of it, so only a hand most of a
+    /// hand's width away counts.
+    static func otherFist(among allHands: [HandFrame], besides cursor: HandFrame?, thresholds: PoseThresholds) -> Bool {
+        guard let cursor, let wrist = cursor[.wrist], let size = cursor.handSize else { return false }
+        return allHands.contains { hand in
+            guard let other = hand[.wrist], other.distance(to: wrist) >= size * 0.7,
+                  let features = HandFeatures(hand, thresholds: thresholds)
+            else { return false }
+            return features.isFist
+        }
+    }
+
     private func receive(_ output: HandSource.Output) {
         guard isRunning else { return }
         let frame = output.frame
@@ -1032,6 +1046,7 @@ final class Pipeline {
         let fresh = analyzer.update(hand: tracked.cursor, at: time)
         let reading = readingHold.update(fresh, at: time)
         latestReading = reading
+        let otherFist = Self.otherFist(among: allowed, besides: tracked.cursor, thresholds: analyzer.settings.thresholds)
         refreshAccessibility(at: time)
         // A tracked hand is proof enough that someone is there: a raised hand often hides the face from the camera.
         if frame.hasPerson || reading != nil {
@@ -1095,19 +1110,24 @@ final class Pipeline {
         }
 
         // Fed every frame, hand or not: losing the hand or the person is what parks or falls back.
-        let newMode = modeController.update(reading, personPresent: present, holdingButton: pointer.isHoldingButton, at: time)
+        let newMode = modeController.update(
+            reading, otherHandFist: otherFist, personPresent: present, holdingButton: pointer.isHoldingButton, at: time
+        )
         if let newMode {
             switchMode(to: newMode)
         }
         let progress = modeController.transitionProgress(at: time)
         if progress != modeProgress {
+            if modeProgress == 0, mode != .normal {
+                Self.logger.notice("Two fists up in \(self.mode.rawValue, privacy: .public)")
+            }
             modeProgress = progress
         }
         let awaiting = modeController.awaitingSecondTap && mode != .pointer
         if awaiting != awaitingSecondTap {
             awaitingSecondTap = awaiting
         }
-        // The frame that switched modes was the trigger — the second tap, the held fist — not also a click or a gesture.
+        // The frame that switched modes was the trigger — the second tap, the held fists — not also a click or a gesture.
         guard newMode == nil else { return }
 
         switch mode {
@@ -1151,7 +1171,11 @@ final class Pipeline {
                 if status.scrolling { onTutorialEvent(.scrolled) }
                 if status.dragging { onTutorialEvent(.dragged) }
             }
-            applySecondHand(tracked.other, at: time)
+            // Both hands closed is ✊✊ on its way to gesture mode, not the other hand pressing the button — unless it
+            // already is, when the drag carries on.
+            if secondHand.isPressing || reading?.isFist != true || !otherFist {
+                applySecondHand(tracked.other, at: time)
+            }
 
         case .normal:
             // Swipes belong to desktop mode now, so the palm this mode watches for is only on its way there.
