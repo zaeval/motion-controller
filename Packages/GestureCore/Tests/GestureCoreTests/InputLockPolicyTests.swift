@@ -54,4 +54,16 @@ struct InputLockPolicyTests {
             #expect(!verdict(event, at: CGPoint(x: 700, y: 400), asking: true, keysReachDialog: true).passes)
         }
     }
+
+    @Test func anExemptAppGetsEverythingThroughAndNeverAsks() {
+        for event in Self.every {
+            for asking in [false, true] {
+                let result = InputLockPolicy.verdict(
+                    for: event, at: CGPoint(x: 100, y: 100), asking: asking, keysReachDialog: false,
+                    dialogFrames: [dialog], fromExemptApp: true
+                )
+                #expect(result == InputLockPolicy.Verdict(passes: true, asksToUnlock: false))
+            }
+        }
+    }
 }

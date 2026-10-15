@@ -52,6 +52,17 @@ private struct MenuContent: View {
             set: { appState.pipeline.ownerMode = $0 }
         ))
         .disabled(appState.pipeline.enrolledFaces.isEmpty || !appState.pipeline.faceUnlockAvailable)
+        Menu("잠금 예외 앱 \(appState.pipeline.lockExemptions.apps.count)개") {
+            Text("체크한 앱의 클릭·키 입력은 잠긴 동안에도 통과")
+            ForEach(appState.pipeline.lockExemptions.choices) { choice in
+                Toggle(choice.label, isOn: Binding(
+                    get: { choice.isExempt },
+                    set: { appState.pipeline.lockExemptions.setExempt(choice, $0) }
+                ))
+            }
+            Divider()
+            Button("다른 앱 추가…") { appState.pipeline.lockExemptions.chooseApp() }
+        }
         // Not disabled without the model any more: the panel offers to install it.
         Button(appState.pipeline.enrolledFaces.isEmpty ? "얼굴 등록…" : "얼굴 추가…") { appState.showEnrollment() }
             .disabled(!appState.pipeline.isRunning)
