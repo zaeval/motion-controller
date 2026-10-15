@@ -100,6 +100,8 @@ final class Pipeline {
     private static let wasLockedKey = "screenWasLocked"
     /// Holds input back while the dark screen is locked, and asks for Touch ID or the password.
     @ObservationIgnored private let screenLock = ScreenLock()
+    /// The apps whose clicks and keys get through the lock, for the menu's checklist.
+    let lockExemptions = LockExemptions()
     @ObservationIgnored private let faceSource = FaceSource()
     @ObservationIgnored private var faceVerification = FaceVerification()
     /// Checks the face of whoever turns up after an empty room.
@@ -359,6 +361,7 @@ final class Pipeline {
         screenLock.onHeldBack = { [weak self] in
             self?.watchIntruders(.inputHeldBack)
         }
+        screenLock.isExemptSource = { [lockExemptions] pid in lockExemptions.allows(pid) }
         screenLock.onUnusable = { [weak self] why in
             self?.endLock("⚠️ \(why) · 잠금 해제")
         }
@@ -879,7 +882,9 @@ final class Pipeline {
     /// Locks input and parks recognition. False, with nothing locked, when locking can't work right now.
     private func engageLock() -> Bool {
         guard !isLocked else { return true }
-        guard !systemScreenLocked, screenLock.lock() else { return false }
+        guard !systemScreenLocked else { return false }
+        lockExemptions.prepareForLock()
+        guard screenLock.lock() else { return false }
         isLocked = true
         UserDefaults.standard.set(true, forKey: Self.wasLockedKey)
         onLockCover?(true)

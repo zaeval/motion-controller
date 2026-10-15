@@ -48,6 +48,8 @@ final class ScreenLock {
     var onUnusable: ((String) -> Void)?
     /// Input was held back: someone is trying to use the Mac. A few times a second at most.
     var onHeldBack: (() -> Void)?
+    /// Whether input sent by this process gets through: an app ticked in the menu's 잠금 예외 앱.
+    var isExemptSource: (@MainActor (pid_t) -> Bool)?
 
     private var tap: CFMachPort?
     private var source: CFRunLoopSource?
@@ -75,8 +77,9 @@ final class ScreenLock {
                 guard let userInfo else { return Unmanaged.passUnretained(event) }
                 let lock = Unmanaged<ScreenLock>.fromOpaque(userInfo).takeUnretainedValue()
                 let location = event.location
+                let source = pid_t(truncatingIfNeeded: event.getIntegerValueField(.eventSourceUnixProcessID))
                 // Added to the main run loop below, so this is always the main thread.
-                let passes = MainActor.assumeIsolated { lock.handle(type, at: location) }
+                let passes = MainActor.assumeIsolated { lock.handle(type, at: location, from: source) }
                 return passes ? Unmanaged.passUnretained(event) : nil
             },
             userInfo: Unmanaged.passUnretained(self).toOpaque()
@@ -114,7 +117,7 @@ final class ScreenLock {
     }
 
     /// Decides one event inside the tap callback, which must return right away.
-    private func handle(_ type: CGEventType, at location: CGPoint) -> Bool {
+    private func handle(_ type: CGEventType, at location: CGPoint, from source: pid_t) -> Bool {
         if type == .tapDisabledByTimeout || type == .tapDisabledByUserInput {
             if let tap, state != .unlocked {
                 CGEvent.tapEnable(tap: tap, enable: true)
@@ -131,7 +134,8 @@ final class ScreenLock {
             at: location,
             asking: asking,
             keysReachDialog: asking && keyboard && (dialogIsFrontmost || IsSecureEventInputEnabled()),
-            dialogFrames: dialogFrames
+            dialogFrames: dialogFrames,
+            fromExemptApp: source > 0 && isExemptSource?(source) == true
         )
         if !verdict.passes {
             swallowed += 1
