@@ -11,6 +11,10 @@ import os
 /// An app is known by its bundle ID and by the designated requirement its bundle carried when it was ticked, so
 /// another app claiming the same bundle ID doesn't get through. An unsigned app has no requirement and is known by
 /// its bundle ID alone. Input from the hardware — whoever sits at the Mac — never comes from an exempt app.
+///
+/// Processes are told apart by the app bundle their executable sits in, not by NSRunningApplication: that only knows
+/// what LaunchServices launched, and on the bot Mac KakaoWeb is a launchd job it returns nil for (found 2026-10-16),
+/// so KakaoWeb neither showed up in the list nor got through when ticked.
 @MainActor
 @Observable
 final class LockExemptions {
@@ -41,6 +45,13 @@ final class LockExemptions {
         }
     }
 
+    /// The app a process belongs to: the outermost bundle its executable sits in, so a helper counts as its app.
+    struct Sender: Equatable {
+        var bundleID: String
+        var name: String
+        var url: URL?
+    }
+
     private static let logger = Logger(subsystem: "com.bori.MotionController", category: "Screen")
     private static let key = "lockExemptApps"
     /// Ticked from the start where they're installed: what the list was made for.
@@ -49,10 +60,11 @@ final class LockExemptions {
     private(set) var apps: [App] = []
     /// Exempt apps, then apps held back during a lock, then everything else running that isn't part of macOS.
     private(set) var choices: [Choice] = []
-    private var heldBack: [String: (name: String, url: URL?)] = [:]
+    private var heldBack: [String: Sender] = [:]
     /// Per process, for the length of a lock: the first event pays for the signature check (~50ms), the rest don't.
     @ObservationIgnored private var verdicts: [pid_t: Bool] = [:]
     @ObservationIgnored private var observers: [NSObjectProtocol] = []
+    @ObservationIgnored private var refreshTask: Task<Void, Never>?
 
     init() {
         if let data = UserDefaults.standard.data(forKey: Self.key),
@@ -60,8 +72,11 @@ final class LockExemptions {
             apps = saved
         } else {
             // Not saved until one is found, so installing KakaoWeb after this app still ticks it.
+            let running = Self.runningApps()
             apps = Self.defaultBundleIDs.compactMap { bundleID in
-                NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID).map(Self.app(at:))
+                let url = NSWorkspace.shared.urlForApplication(withBundleIdentifier: bundleID)
+                    ?? running.first { $0.sender.bundleID == bundleID }?.sender.url
+                return url.map(Self.app(at:))
             }
             if !apps.isEmpty { save() }
         }
@@ -78,6 +93,13 @@ final class LockExemptions {
             })
         }
         refresh()
+        // Apps launchd starts post no workspace notification, so the list also looks again every few seconds.
+        refreshTask = Task { [weak self] in
+            while !Task.isCancelled {
+                try? await Task.sleep(for: .seconds(10))
+                self?.refresh()
+            }
+        }
     }
 
     /// Whether input sent by process `pid` gets through the lock. Called from the event tap, so it must stay quick.
@@ -91,9 +113,8 @@ final class LockExemptions {
     /// Starts a lock with no verdicts, and checks the exempt apps already running before their first click arrives.
     func prepareForLock() {
         verdicts = [:]
-        for process in NSWorkspace.shared.runningApplications
-        where apps.contains(where: { $0.bundleID == process.bundleIdentifier }) {
-            _ = allows(process.processIdentifier)
+        for (pid, sender) in Self.runningApps() where apps.contains(where: { $0.bundleID == sender.bundleID }) {
+            _ = allows(pid)
         }
     }
 
@@ -147,20 +168,17 @@ final class LockExemptions {
 
     private func refresh() {
         var rows: [String: Choice] = [:]
-        let ownPID = ProcessInfo.processInfo.processIdentifier
-        for process in NSWorkspace.shared.runningApplications {
-            guard process.processIdentifier != ownPID, process.activationPolicy != .prohibited,
-                  let bundleID = process.bundleIdentifier, !bundleID.hasPrefix("com.apple."),
-                  let url = process.bundleURL
+        for (_, sender) in Self.runningApps() {
+            guard let url = sender.url, !sender.bundleID.hasPrefix("com.apple."),
+                  sender.bundleID != Bundle.main.bundleIdentifier
             else { continue }
-            rows[bundleID] = Choice(
-                bundleID: bundleID, name: process.localizedName ?? Self.name(of: url), url: url,
-                isExempt: false, wasHeldBack: false
+            rows[sender.bundleID] = Choice(
+                bundleID: sender.bundleID, name: sender.name, url: url, isExempt: false, wasHeldBack: false
             )
         }
-        for (bundleID, process) in heldBack {
+        for (bundleID, sender) in heldBack {
             rows[bundleID] = Choice(
-                bundleID: bundleID, name: process.name, url: process.url, isExempt: false, wasHeldBack: true
+                bundleID: bundleID, name: sender.name, url: sender.url, isExempt: false, wasHeldBack: true
             )
         }
         for app in apps {
@@ -168,39 +186,85 @@ final class LockExemptions {
                 bundleID: app.bundleID, name: app.name, url: nil, isExempt: true, wasHeldBack: false
             )].isExempt = true
         }
-        choices = rows.values.sorted { left, right in
+        let sorted = rows.values.sorted { left, right in
             if left.isExempt != right.isExempt { return left.isExempt }
             if left.wasHeldBack != right.wasHeldBack { return left.wasHeldBack }
             return left.name.localizedStandardCompare(right.name) == .orderedAscending
         }
+        if sorted != choices { choices = sorted }
     }
 
     private func check(_ pid: pid_t) -> Bool {
         // The hardware, this app's own events, and processes that aren't apps.
-        guard pid > 0, pid != ProcessInfo.processInfo.processIdentifier,
-              let process = NSRunningApplication(processIdentifier: pid), let bundleID = process.bundleIdentifier
-        else { return false }
-        let path = process.bundleURL?.path ?? bundleID
-        guard let app = apps.first(where: { $0.bundleID == bundleID }) else {
-            noteHeldBack(process, bundleID: bundleID)
+        guard pid > 0, pid != ProcessInfo.processInfo.processIdentifier, let sender = Self.sender(of: pid) else {
+            return false
+        }
+        let path = sender.url?.path ?? sender.bundleID
+        guard let app = apps.first(where: { $0.bundleID == sender.bundleID }) else {
+            noteHeldBack(sender)
             return false
         }
         guard let requirement = app.requirement else { return true }
-        let status = Self.validate(pid: pid, bundleURL: process.bundleURL, requirement: requirement)
+        let bundleURL = sender.url ?? NSWorkspace.shared.urlForApplication(withBundleIdentifier: sender.bundleID)
+        let status = Self.validate(pid: pid, bundleURL: bundleURL, requirement: requirement)
         guard status == errSecSuccess else {
             Self.logger.notice("\(path, privacy: .public)(pid \(pid))는 예외 앱 서명이 아니라 잠금에서 막음 (\(status))")
-            noteHeldBack(process, bundleID: bundleID)
+            noteHeldBack(sender)
             return false
         }
         Self.logger.notice("\(path, privacy: .public)(pid \(pid))는 예외 앱이라 잠금을 통과")
         return true
     }
 
-    private func noteHeldBack(_ process: NSRunningApplication, bundleID: String) {
-        guard heldBack[bundleID] == nil else { return }
-        let url = process.bundleURL
-        heldBack[bundleID] = (process.localizedName ?? url.map(Self.name(of:)) ?? bundleID, url)
+    /// Only apps: the list has nothing to tick for a bare tool or a system process.
+    private func noteHeldBack(_ sender: Sender) {
+        guard sender.url != nil, heldBack[sender.bundleID] == nil else { return }
+        heldBack[sender.bundleID] = sender
         refresh()
+    }
+
+    /// Every running process whose executable sits in an app bundle. A few milliseconds for ~800 processes.
+    private static func runningApps() -> [(pid: pid_t, sender: Sender)] {
+        var pids = [pid_t](repeating: 0, count: 8192)
+        let count = Int(proc_listallpids(&pids, Int32(pids.count * MemoryLayout<pid_t>.size)))
+        return pids.prefix(max(count, 0)).compactMap { pid in
+            guard pid > 0, let path = executablePath(of: pid), let url = appBundle(containing: path),
+                  let bundleID = Bundle(url: url)?.bundleIdentifier
+            else { return nil }
+            return (pid, Sender(bundleID: bundleID, name: name(of: url), url: url))
+        }
+    }
+
+    /// From the executable's path, or from its code signature when the path can't be had.
+    private static func sender(of pid: pid_t) -> Sender? {
+        if let path = executablePath(of: pid), let url = appBundle(containing: path),
+           let bundleID = Bundle(url: url)?.bundleIdentifier {
+            return Sender(bundleID: bundleID, name: name(of: url), url: url)
+        }
+        var code: SecCode?
+        var info: CFDictionary?
+        guard SecCodeCopyGuestWithAttributes(nil, [kSecGuestAttributePid: pid] as CFDictionary, [], &code)
+            == errSecSuccess, let code,
+            SecCodeCopySigningInformation(
+                unsafeBitCast(code, to: SecStaticCode.self), SecCSFlags(rawValue: kSecCSDynamicInformation), &info
+            ) == errSecSuccess,
+            let dict = info as? [String: Any], let identifier = dict[kSecCodeInfoIdentifier as String] as? String
+        else { return nil }
+        let url = (dict[kSecCodeInfoMainExecutable as String] as? URL).flatMap { appBundle(containing: $0.path) }
+        return Sender(bundleID: identifier, name: url.map(name(of:)) ?? identifier, url: url)
+    }
+
+    private static func executablePath(of pid: pid_t) -> String? {
+        var buffer = [UInt8](repeating: 0, count: 4 * Int(MAXPATHLEN))
+        let length = Int(proc_pidpath(pid, &buffer, UInt32(buffer.count)))
+        guard length > 0 else { return nil }
+        return String(decoding: buffer.prefix(length), as: UTF8.self)
+    }
+
+    /// The outermost `.app` on the path, when the path is an app's executable or something inside one.
+    private static func appBundle(containing path: String) -> URL? {
+        guard let range = path.range(of: ".app/") else { return nil }
+        return URL(filePath: String(path[..<range.lowerBound]) + ".app", directoryHint: .isDirectory)
     }
 
     /// `errSecSuccess` when the running process satisfies `requirement`.
