@@ -79,8 +79,27 @@ CONCLUSION
 
 echo "▸ Building the component package"
 component="$work/MotionControllerComponent.pkg"
-pkgbuild --root "$work/root" --scripts "$work/scripts" --identifier "$identifier" \
-    --version "$version" --install-location / --ownership recommended "$component" >/dev/null
+# Left to itself pkgbuild marks the app relocatable, and the installer then overwrites whichever copy
+# LaunchServices already knows about instead of /Applications — on this Mac that was the build/DerivedData
+# build, which a rebuild then wipes. BundleIsRelocatable false drops the <relocate> element from PackageInfo.
+components="$work/component.plist"
+pkgbuild --analyze --root "$work/root" "$components" >/dev/null
+python3 - "$components" <<'PYTHON'
+import plistlib
+import sys
+path = sys.argv[1]
+with open(path, "rb") as file:
+    bundles = plistlib.load(file)
+if not bundles:
+    sys.exit("pkgbuild --analyze found no bundles to pin")
+for bundle in bundles:
+    bundle["BundleIsRelocatable"] = False
+with open(path, "wb") as file:
+    plistlib.dump(bundles, file)
+PYTHON
+pkgbuild --root "$work/root" --component-plist "$components" --scripts "$work/scripts" \
+    --identifier "$identifier" --version "$version" --install-location / --ownership recommended \
+    "$component" >/dev/null
 
 echo "▸ Building the installer"
 # Synthesized rather than hand-written, then the welcome and conclusion pages are spliced in.
