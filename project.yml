@@ -34,10 +34,10 @@ targets:
       properties:
         CFBundleName: MotionController
         CFBundleDisplayName: Motion Controller
-        CFBundleShortVersionString: "0.1.2"
+        CFBundleShortVersionString: "0.1.3"
         # App/AppIcon.icns is copied in as a resource because `sources: App` takes the whole folder.
         CFBundleIconFile: AppIcon
-        CFBundleVersion: "3"
+        CFBundleVersion: "4"
         LSUIElement: true
         NSCameraUsageDescription: "손 제스처와 얼굴 잠금에 카메라를 사용합니다. 영상은 전송하지 않고, 잠긴 화면에서 누군가 입력을 시도했을 때만 사진을 이 Mac에 저장합니다."
     entitlements:
