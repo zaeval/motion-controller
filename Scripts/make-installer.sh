@@ -43,8 +43,11 @@ exit 0
 PREINSTALL
 chmod +x "$work/scripts/preinstall"
 
+# Installer.app decodes a charset-less page as Mac Roman, which turns every Korean line into mojibake;
+# the meta tag is what makes it read the UTF-8 these heredocs are written in.
 cat > "$work/resources/welcome.html" <<'WELCOME'
-<html><body style="font: -apple-system-body; padding: 8px">
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head>
+<body style="font: -apple-system-body; padding: 8px">
 <h2>Motion Controller</h2>
 <p>웹캠으로 손 제스처를 읽어 데스크톱 전환, 재생/정지, 볼륨·밝기, 커서와 클릭을 조작하는 메뉴바 앱입니다.
 <code>/Applications</code>에 설치됩니다.</p>
@@ -60,7 +63,8 @@ cat > "$work/resources/welcome.html" <<'WELCOME'
 WELCOME
 
 cat > "$work/resources/conclusion.html" <<'CONCLUSION'
-<html><body style="font: -apple-system-body; padding: 8px">
+<html><head><meta http-equiv="Content-Type" content="text/html; charset=utf-8"></head>
+<body style="font: -apple-system-body; padding: 8px">
 <h2>설치 완료</h2>
 <p><code>/Applications/MotionController.app</code>을 실행하면 메뉴바에 손 아이콘이 생깁니다.
 Dock 아이콘은 없습니다.</p>
