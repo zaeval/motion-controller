@@ -57,6 +57,8 @@ final class Pipeline {
     private static let securityKey = "securityMode"
     /// Whether only the owner's hands drive anything.
     private static let ownerKey = "ownerMode"
+    /// Whether the locked screen photographs whoever tries to use it.
+    private static let intruderPhotosKey = "intruderPhotos"
     /// Photos of whoever tried to use the Mac while it was locked.
     static let intruderPhotosDirectory = URL.applicationSupportDirectory
         .appending(path: "MotionController/Intruders", directoryHint: .isDirectory)
@@ -257,6 +259,16 @@ final class Pipeline {
             ownerName = nil
             updateFaceChecks()
             logMotion(ownerMode ? "🙋 주인만 인식 켬" : "🙋 주인만 인식 끔")
+        }
+    }
+
+    /// The menu's "잠긴 동안 사진 찍기". On unless switched off, which is what the lock has always done; off, nobody is
+    /// photographed at all — the frames are never asked for, rather than taken and thrown away. Photos already saved
+    /// stay where they are, and the menu goes on offering them.
+    var intruderPhotosEnabled = UserDefaults.standard.object(forKey: Pipeline.intruderPhotosKey) as? Bool ?? true {
+        didSet {
+            UserDefaults.standard.set(intruderPhotosEnabled, forKey: Self.intruderPhotosKey)
+            logMotion(intruderPhotosEnabled ? "📸 잠금 중 사진 켬" : "📸 잠금 중 사진 끔")
         }
     }
 
@@ -868,6 +880,7 @@ final class Pipeline {
     /// Keeps a couple of photos of whoever is in front of the camera right now, under their own attempt so they are
     /// saved however the lock ends.
     private func photographStranger() {
+        guard intruderPhotosEnabled else { return }
         attempt += 1
         attemptPhotos = []
         keptAttempts.insert(attempt)
@@ -930,6 +943,7 @@ final class Pipeline {
         for command in intruderWatch.update(event, at: ProcessInfo.processInfo.systemUptime) {
             switch command {
             case .takePhoto:
+                guard intruderPhotosEnabled else { continue }
                 if !wasWatching {
                     attempt += 1
                     attemptPhotos = []

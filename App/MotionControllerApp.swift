@@ -47,6 +47,11 @@ private struct MenuContent: View {
             set: { appState.pipeline.securityMode = $0 }
         ))
         .disabled(!appState.pipeline.lockEnabled || appState.pipeline.enrolledFaces.isEmpty)
+        Toggle("잠긴 동안 사진 찍기 (입력을 시도한 사람)", isOn: Binding(
+            get: { appState.pipeline.intruderPhotosEnabled },
+            set: { appState.pipeline.intruderPhotosEnabled = $0 }
+        ))
+        .disabled(!appState.pipeline.lockEnabled)
         Toggle("주인만 인식 (다른 사람 동작 무시)", isOn: Binding(
             get: { appState.pipeline.ownerMode },
             set: { appState.pipeline.ownerMode = $0 }
