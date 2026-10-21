@@ -52,3 +52,10 @@ targets:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: com.bori.MotionController
         PRODUCT_NAME: MotionController
+      configs:
+        # Xcode injects get-task-allow — the entitlement that lets a debugger attach — into anything it thinks
+        # you might debug. Notarization rejects a build that carries it, so Release is built without it.
+        # Scripts/make-installer.sh re-signs anyway and checks the flag is gone; this keeps a Release build
+        # made straight from Xcode honest too.
+        Release:
+          CODE_SIGN_INJECT_BASE_ENTITLEMENTS: NO

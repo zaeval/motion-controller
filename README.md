@@ -213,13 +213,58 @@ cd "motion controller" && xcodegen generate && xcodebuild -project MotionControl
 ./Scripts/make-installer.sh
 ```
 
-Release로 빌드해서 `dist/MotionController-<버전>.pkg`를 만든다. `/Applications`에 설치하고, 설치 전에
-실행 중인 사본을 종료하며, 설치 화면에 필요한 권한과 첫 실행 안내가 나온다.
+Release로 빌드해서 `dist/MotionController-<버전>.pkg`를 만든다. arm64·x86_64 유니버설로 빌드하고,
+`/Applications`에 설치하고, 설치 전에 실행 중인 사본을 종료하며, 설치 화면에 필요한 권한과 첫 실행 안내가
+나온다. 마지막에 SHA-256을 찍는다.
 
-**서명은 안 된다.** 이 저장소는 Apple Development 인증서로 서명하고 `Developer ID Installer` 인증서가 없기
-때문이다. 이 Mac에서는 그냥 열리지만, 다른 Mac에서는 Gatekeeper가 막으므로 받는 쪽에서 우클릭 > 열기나
-`xattr -dr com.apple.quarantine <파일>.pkg`가 필요하다. 유료 Apple Developer Program의 Developer ID
-인증서가 생기면 스크립트가 알아서 서명한다 (공증은 별도로 `notarytool`이 필요하다).
+**이 키체인에 있는 인증서만큼만 신뢰할 수 있고, 어느 쪽인지는 스크립트가 끝에 말해 준다.**
+
+| 만들어지는 것 | 필요한 것 | 다른 Mac에서 |
+| --- | --- | --- |
+| 공증됨 | Developer ID 인증서 2개 + `MC_NOTARY_PROFILE` | 경고 없이 열린다 |
+| 서명만 됨 | Developer ID 인증서 2개 | **막힌다** — Catalina 이후 서명만으로는 부족하다 |
+| 서명 안 됨 | (지금 상태) | 막힌다. 우클릭 > 열기나 `xattr -dr com.apple.quarantine <파일>.pkg` |
+
+지금은 이 Mac에 `Developer ID Application`도 `Developer ID Installer`도 없어서 세 번째다. 배포용으로
+만들려면 유료 Apple Developer Program이 필요하고, 한 번만 해 두면 된다.
+
+1. Xcode > Settings > Accounts > Manage Certificates에서 **Developer ID Application**과
+   **Developer ID Installer**를 만든다 (팀 `RWGR7K8RB6`).
+2. 공증 자격을 키체인에 저장한다. 앱 암호는 appleid.apple.com에서 발급한다.
+
+```bash
+xcrun notarytool store-credentials MotionController --apple-id <Apple ID> --team-id RWGR7K8RB6 --password <앱 암호>
+```
+
+```bash
+MC_NOTARY_PROFILE=MotionController ./Scripts/make-installer.sh
+```
+
+인증서는 스크립트가 알아서 찾아 쓴다. 바꿀 설정은 없다. `MC_SIGN_IDENTITY`로 앱 서명 인증서를 직접
+지정할 수도 있다.
+
+**Developer ID로 바꾸면 서명이 달라지므로 `/Applications` 사본의 손쉬운 사용 권한을 한 번 다시
+허용해야 한다.** 고장이 아니라 당연한 결과다.
+
+### 확인하는 것들
+
+패키지가 "그럴듯해 보이는" 상태로 나가지 않도록, 확인에 실패하면 빌드를 멈춘다. 작업 디렉터리
+(`dist/work`)는 실패했을 때만 남기고, 거기 `build.log`에 이유가 있다.
+
+- **바이너리에 실제로 들어 있는 아키텍처**와 설치 관리자가 주장하는 `hostArchitectures`가 같은지.
+  `productbuild`는 payload가 arm64뿐이어도 `x86_64,arm64`를 적어 넣는다 — 0.1.3이 Intel Mac에서
+  설치는 되고 실행은 안 되는 앱을 그렇게 내보냈다. 이제 `lipo`가 본 값만 쓰고, `<options>`는 하나로 둔다.
+- **`get-task-allow`가 서명에 남아 있지 않은지.** 디버거를 붙일 수 있게 하는 권한이고, 공증이 이것만으로
+  거절한다. Release에서 Xcode가 넣지 않도록 `project.yml`에 적어 두고, 서명을 직접 다시 해서 지우고,
+  마지막에 없는지 본다.
+- **하드닝된 런타임**과 **보안 타임스탬프.** 둘 다 공증의 전제다. 타임스탬프는 Apple 서버가 필요해서,
+  오프라인이면 공증 가능한 패키지를 만들 수 없다고 말하고 멈춘다.
+- **얼굴 모델이 payload에 들어가지 않았는지.** `sources: App`이 `App/Vision/Models`에 있는 것을 전부
+  번들에 넣기 때문에, 모델을 받아 둔 컴퓨터에서 패키징하면 비상업용 가중치를 재배포하게 된다. 비어 있지
+  않으면 빌드를 멈춘다. 앱은 어차피 직접 내려받으므로 패키징할 때만 옮겨 두면 된다.
+- **payload가 `/Applications/MotionController.app` 말고 아무것도 설치하지 않는지.**
+- 마지막으로 `pkgutil --check-signature`와 `spctl -a -t install`, 공증했으면 `stapler validate`까지.
+  끝에 나오는 안내문은 이 결과에서 만들어지므로 실제 상태와 어긋날 수 없다.
 
 설치한 앱과 개발 빌드는 번들 ID가 같아서 설정·등록된 얼굴·얼굴 모델(`~/Library/Application Support/MotionController/`)을
 공유한다. 다만 **손쉬운 사용 권한은 실행 파일 위치가 바뀌면 다시 허용해야 할 수 있다** — 설치 후에는
@@ -246,8 +291,9 @@ open "build/DerivedData/Build/Products/Debug/MotionController.app"
 IDLE로 바뀐다. 마지막에 키보드 단축키와 자리 비움·잠금 동작을 정리해 보여 준다. 메뉴바 > **사용법 보기…** 로
 다시 연다.
 
-서명은 Apple Development 인증서로 고정돼 있다. ad-hoc 서명은 빌드마다 서명이 바뀌어서 손쉬운 사용
-권한이 매번 초기화된다.
+개발 빌드의 서명은 Apple Development 인증서로 고정돼 있다. ad-hoc 서명은 빌드마다 서명이 바뀌어서
+손쉬운 사용 권한이 매번 초기화된다. 설치 패키지는 Developer ID 인증서가 있으면 그걸 쓴다 (위의
+[설치 패키지](#4-설치-패키지-선택) 참고).
 
 ## 커서 영역 보정
 
