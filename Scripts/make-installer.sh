@@ -82,9 +82,12 @@ xcodegen generate >"$build_log" 2>&1
 # ARCHS has to be forced here, not in project.yml: an unqualified `xcodebuild build` picks this Mac as the
 # destination, and the destination narrows ARCHS to the one architecture it runs, however the project is set up.
 # Without this the package claims to support Intel and installs an app that cannot launch there.
+# Xcode's own signing is switched off: everything is signed by hand below anyway, and Xcode insists on a
+# development certificate that a release Mac holding only Developer ID ones doesn't have (bitbytebot, 2026-11-06:
+# "No signing certificate \"Mac Development\" found").
 xcodebuild -project MotionController.xcodeproj -scheme MotionController -configuration Release \
     -derivedDataPath build/DerivedData \
-    ONLY_ACTIVE_ARCH=NO ARCHS="arm64 x86_64" \
+    ONLY_ACTIVE_ARCH=NO ARCHS="arm64 x86_64" CODE_SIGNING_ALLOWED=NO \
     build >>"$build_log" 2>&1
 built="build/DerivedData/Build/Products/Release/$app_name"
 [ -d "$built" ] || fail "no Release build at $built"
