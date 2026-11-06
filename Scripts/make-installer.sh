@@ -22,6 +22,9 @@
 #                         xcrun notarytool store-credentials MotionController \
 #                           --apple-id <id> --team-id RWGR7K8RB6 --password <app-specific-password>
 #                       Unset means "skip notarization"; the script says so instead of failing.
+#   MC_NOTARY_KEYCHAIN  Keychain holding that profile, when it isn't the default one. Over SSH the login keychain
+#                       stays locked, so a build Mac keeps its profile in a keychain of its own (bitbytebot:
+#                       developer-id.keychain-db with profile bitbytebot-notary), unlocked before the script runs.
 #   MC_SIGN_IDENTITY    Override the app signing identity instead of letting the script pick one.
 
 set -euo pipefail
@@ -284,7 +287,8 @@ notarized=no
 # so submitting an Apple-Development-signed app would buy a rejection this script can see coming.
 if [ -n "${MC_NOTARY_PROFILE:-}" ] && [ "$trusted" = yes ] && [ -n "$installer_identity" ]; then
     echo "▸ Notarizing as $MC_NOTARY_PROFILE (this uploads the package to Apple and waits)"
-    xcrun notarytool submit "$package" --keychain-profile "$MC_NOTARY_PROFILE" --wait \
+    xcrun notarytool submit "$package" --keychain-profile "$MC_NOTARY_PROFILE" \
+        ${MC_NOTARY_KEYCHAIN:+--keychain "$MC_NOTARY_KEYCHAIN"} --wait \
         || fail "notarization failed; \`xcrun notarytool log <submission-id> --keychain-profile $MC_NOTARY_PROFILE\` says why"
     # Stapling writes the ticket into the package so it validates even on a Mac that cannot reach Apple.
     xcrun stapler staple "$package" >>"$build_log" 2>&1 || fail "the package was notarized but could not be stapled"
