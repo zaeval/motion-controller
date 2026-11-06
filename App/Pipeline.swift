@@ -698,6 +698,9 @@ final class Pipeline {
         let best = matches.max { $0.match.similarity < $1.match.similarity }
         let match = best?.match
         let similarity = match?.similarity
+        if let similarity, similarity >= FaceVerification.Settings().threshold {
+            lastOwnerFaceTime = output.time
+        }
         lastFaceSimilarity = similarity
         lastFaceMatch = match?.face.name
         // Owner mode: pin the owner to the body whose head this face sits on.
@@ -861,8 +864,12 @@ final class Pipeline {
     /// Security mode is checking the faces of whoever is at the unlocked Mac: the whole time anyone is in view (the
     /// user's call, 2026-09-23), not only whoever turns up after the seat empties. Face checks cost hand tracking some
     /// frame rate while they run.
+    ///
+    /// They carry on until the screen goes dark, not only while someone is seen. A face that matches is also what says
+    /// the owner is still there (`lastOwnerFaceTime`), so stopping the checks the moment presence lapses would leave
+    /// someone the body request misses to be blacked out and locked ten seconds later, sitting right there.
     private var vettingFaces: Bool {
-        canLockOutStrangers && !isLocked && personPresent
+        canLockOutStrangers && !isLocked && (personPresent || screenPresence.state == .awake)
     }
 
     /// A face matching nobody, with nobody enrolled in view: black the screen and lock it before they get to use it,
@@ -1031,8 +1038,20 @@ final class Pipeline {
 
     /// When a body was last detected. HandSource (B) runs body pose slower than hand pose, so presence holds briefly.
     @ObservationIgnored private var lastPersonTime: TimeInterval = -.infinity
+    /// When a face matching somebody enrolled was last seen. The body request misses someone sitting close for a
+    /// minute at a time (`bodies 0` for 20–70 s with the user plainly there, 2026-11-06), and with the room's own
+    /// still hands taken out nothing else would vouch for them meanwhile. Only while face checks run: security mode,
+    /// or a locked screen.
+    @ObservationIgnored private var lastOwnerFaceTime: TimeInterval = -.infinity
+    /// Face checks run a few times a second, so one stands for longer than a hand or body frame does.
+    private static let ownerFaceHold: TimeInterval = 1.0
+    /// Hands that are part of the room: a still hand-shaped thing in view counted as someone being there forever,
+    /// and the screen never locked (2026-11-06). See `SceneryHands`.
+    @ObservationIgnored private var sceneryHands = SceneryHands()
 
-    private func analyze(_ frame: PoseFrame) {
+    private func analyze(_ raw: PoseFrame) {
+        // Everything below, presence and every gesture, sees the frame without them. Recordings keep the raw frame.
+        let frame = sceneryHands.update(raw)
         let time = frame.timestamp
         let heads = frame.bodies.map { $0[.nose] ?? $0[.neck] }
         lastHeads = heads
@@ -1061,10 +1080,11 @@ final class Pipeline {
         let otherFist = Self.otherFist(among: allowed, besides: tracked.cursor, thresholds: analyzer.settings.thresholds)
         refreshAccessibility(at: time)
         // A tracked hand is proof enough that someone is there: a raised hand often hides the face from the camera.
+        // A hand that hasn't moved in seconds is not, which is what `sceneryHands` took out above.
         if frame.hasPerson || reading != nil {
             lastPersonTime = time
         }
-        let present = time - lastPersonTime < 0.5
+        let present = time - lastPersonTime < 0.5 || time - lastOwnerFaceTime < Self.ownerFaceHold
         if present != personPresent {
             personPresent = present
             Self.logger.notice("Person \(present ? "present" : "absent", privacy: .public)")
@@ -1095,6 +1115,10 @@ final class Pipeline {
         // counts as being there too, so someone the camera misses isn't left in front of a black screen.
         let screenPresent = present || ScreenKeeper.secondsSinceInput < 2
         let screenChange = screenPresence.update(personPresent: screenPresent, at: time)
+        if screenChange != nil {
+            // Security mode's face checks run until the screen goes dark (`vettingFaces`).
+            updateFaceChecks()
+        }
         if screenPresence.state == .dimmed {
             if screenChange != nil {
                 // Touch ID or the password is the floor; an enrolled face only adds a way in that needs no
@@ -1489,7 +1513,7 @@ final class Pipeline {
         // log after the fact. The debug preview shows the same numbers live.
         if output.frame.timestamp - lastStatsLog >= 5 {
             lastStatsLog = output.frame.timestamp
-            Self.logger.notice("Vision \(self.handSourceMode.rawValue, privacy: .public) \(self.stats.fps, format: .fixed(precision: 1), privacy: .public) fps \(output.processingMilliseconds, format: .fixed(precision: 1), privacy: .public) ms · bodies \(output.frame.bodies.count, privacy: .public) hands \(output.frame.allHands.count, privacy: .public) (loose \(output.frame.looseHands.count, privacy: .public)) · hand \(output.handMilliseconds, format: .fixed(precision: 1), privacy: .public) ms body \(output.bodyMilliseconds, format: .fixed(precision: 1), privacy: .public) ms · person \(self.personPresent, privacy: .public) dark \(self.sceneIsDark, privacy: .public) luma \(self.sceneLuma ?? -1, format: .fixed(precision: 2), privacy: .public) security \(self.securityMode, privacy: .public) locked \(self.isLocked, privacy: .public) armed \(self.canLockOutStrangers, privacy: .public)")
+            Self.logger.notice("Vision \(self.handSourceMode.rawValue, privacy: .public) \(self.stats.fps, format: .fixed(precision: 1), privacy: .public) fps \(output.processingMilliseconds, format: .fixed(precision: 1), privacy: .public) ms · bodies \(output.frame.bodies.count, privacy: .public) hands \(output.frame.allHands.count, privacy: .public) (loose \(output.frame.looseHands.count, privacy: .public), still \(self.sceneryHands.removedCount, privacy: .public)) · hand \(output.handMilliseconds, format: .fixed(precision: 1), privacy: .public) ms body \(output.bodyMilliseconds, format: .fixed(precision: 1), privacy: .public) ms · person \(self.personPresent, privacy: .public) dark \(self.sceneIsDark, privacy: .public) luma \(self.sceneLuma ?? -1, format: .fixed(precision: 2), privacy: .public) security \(self.securityMode, privacy: .public) locked \(self.isLocked, privacy: .public) armed \(self.canLockOutStrangers, privacy: .public)")
         }
         recentOutputs.append((output.frame.timestamp, output.processingMilliseconds))
         if recentOutputs.count > 60 {
